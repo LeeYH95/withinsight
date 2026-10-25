@@ -10,7 +10,7 @@ import NotesCore
     private let selectPaper: (NotePaper) -> Void
     init(selected: NotePaper, select: @escaping (NotePaper) -> Void) {
         selectedPaper = selected; selectPaper = select
-        super.init(title: "便笺背景")
+        super.init(title: "纸张颜色")
         for paper in papers {
             let item = ClosureMenuItem(paper.chineseName) { [weak self] in self?.select(paper) }
             item.state = paper == selected ? .on : .off
@@ -18,6 +18,16 @@ import NotesCore
         }
     }
     required init(coder: NSCoder) { fatalError("init(coder:) is unsupported") }
+    static func options(selected: NotePaper, select: @escaping (NotePaper) -> Void) -> NSMenu {
+        let menu = NSMenu()
+        for paper in NotePaper.allCases {
+            let item = ClosureMenuItem(paper.chineseName) { select(paper) }
+            item.notesPaperSwatch = paper
+            item.state = paper == selected ? .on : .off
+            menu.addItem(item)
+        }
+        return menu
+    }
     private func select(_ paper: NotePaper) {
         selectedPaper = paper
         for (index, item) in items.enumerated() { item.state = papers[index] == paper ? .on : .off }
@@ -30,23 +40,23 @@ struct NotesPaperPalette: View {
     let menu: NotesPaperMenu
     let presenter: NotesMenuPresenter
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("便笺背景").font(.system(size: 12, weight: .medium)).padding(.horizontal, 6)
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 3), spacing: 8) {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("纸张颜色").font(.system(size: 12)).foregroundStyle(NotesTheme.muted).padding(.horizontal, 4)
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 3), spacing: 6) {
                 ForEach(Array(menu.papers.enumerated()), id: \.element) { index, paper in
                     let active = menu.selectedPaper == paper
                     Button { presenter.choose(index) } label: {
-                        VStack(spacing: 9) {
-                            Circle().fill(NotesTheme.editorSwatch(paper))
-                                .overlay(Circle().stroke(NotesTheme.border, lineWidth: 0.8))
-                                .frame(width: 24, height: 24)
-                                .overlay { Circle().stroke(active ? NotesTheme.accent : .clear, lineWidth: 1.3).padding(-4) }
-                            Text(paper.chineseName).font(.system(size: 10)).foregroundStyle(active ? NotesTheme.accent : NotesTheme.muted)
-                        }.frame(maxWidth: .infinity).frame(height: 61)
-                            .background(NotesTheme.accent.opacity(navigator.selected == index ? 0.065 : 0), in: RoundedRectangle(cornerRadius: 8))
-                            .contentShape(RoundedRectangle(cornerRadius: 8))
+                        VStack(spacing: 7) {
+                            RoundedRectangle(cornerRadius: 9).fill(NotesTheme.editorSwatch(paper))
+                                .overlay(RoundedRectangle(cornerRadius: 9).stroke(active ? NotesTheme.accent : NotesTheme.border, lineWidth: active ? 1.5 : 1))
+                                .frame(width: 36, height: 30)
+                                .overlay { if active { Image(systemName: "checkmark").font(.system(size: 11)).foregroundStyle(NotesTheme.accent) } }
+                            Text(paper.chineseName).font(.system(size: 12)).foregroundStyle(active ? NotesTheme.accent : NotesTheme.muted)
+                        }.frame(maxWidth: .infinity).frame(height: 73)
+                            .background(NotesTheme.accent.opacity(navigator.selected == index ? 0.065 : 0), in: RoundedRectangle(cornerRadius: 10))
+                            .contentShape(RoundedRectangle(cornerRadius: 10))
                     }.buttonStyle(NotesPressStyle(hoverFill: false))
-                        .accessibilityLabel("选择" + paper.chineseName + "背景")
+                        .accessibilityLabel("选择" + paper.chineseName + "纸张")
                         .accessibilityValue(active ? "已选中" : "")
                         .accessibilityAddTraits(active ? [.isSelected] : [])
                         .onHover { if $0 { navigator.selected = index } }
@@ -56,7 +66,7 @@ struct NotesPaperPalette: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(NotesTheme.shell, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
             .overlay { RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(NotesTheme.border, lineWidth: 1) }
-            .accessibilityElement(children: .contain).accessibilityLabel("便笺背景配色")
+            .accessibilityElement(children: .contain).accessibilityLabel("纸张颜色")
     }
 }
 
@@ -71,10 +81,10 @@ struct NotesPaperButton: View {
         } label: {
             Circle().fill(NotesTheme.editorSwatch(paper))
                 .overlay(Circle().stroke(NotesTheme.muted, lineWidth: 0.8))
-                .frame(width: 18, height: 18).frame(width: 34, height: 34).contentShape(Rectangle())
+                .frame(width: 20, height: 20).frame(width: 38, height: 38).contentShape(Rectangle())
         }.buttonStyle(NotesPressStyle())
-            .accessibilityLabel("更换便笺背景，当前：" + paper.chineseName)
-            .notesTooltip("便笺背景：" + paper.chineseName + " · 点击更换")
+            .accessibilityLabel("纸张颜色，当前：" + paper.chineseName)
+            .notesTooltip("纸张颜色：" + paper.chineseName + " · 点击更换")
             .background(NotesMenuAnchor { anchor = $0 })
     }
 }

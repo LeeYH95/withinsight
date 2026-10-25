@@ -5,7 +5,12 @@ import NotesCore
 
 @main struct UIHarness {
     @MainActor static func main() throws {
+        setbuf(stdout, nil)
         _ = NSApplication.shared
+        if CommandLine.arguments.dropFirst().first == "--durability-child" {
+            try DurabilityProbe.child(Array(CommandLine.arguments.dropFirst(2)))
+            return
+        }
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("LineNotes-ui-check-" + UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -16,7 +21,7 @@ import NotesCore
         func group(_ body: () throws -> Void) rethrows { session.undoManager.beginUndoGrouping(); defer { session.undoManager.endUndoGrouping() }; try body() }
         func check(_ value: Bool, _ name: String) { if !value { fatalError("FAIL: " + name) }; print("PASS: " + name) }
         try group {
-            session.changeTitle("原生便笺")
+            session.changeTitle("原生闪念")
             var block = session.note.blocks[0]; block.text = "第一段"; session.updateText(block)
             try session.commit()
         }
@@ -87,6 +92,7 @@ import NotesCore
         blocked.undoManager.groupsByEvent = false
         blocked.undoManager.beginUndoGrouping(); blocked.changeTitle("unsaved edit"); blocked.undoManager.endUndoGrouping()
         let blockedFile = blockedStore.directory.appendingPathComponent("notes.json")
+        let blockedSavedData = try Data(contentsOf: blockedFile)
         try FileManager.default.removeItem(at: blockedFile)
         try FileManager.default.createDirectory(at: blockedFile, withIntermediateDirectories: false)
         do { try blocked.commit(); fatalError("expected blocked write") } catch {}
@@ -94,17 +100,20 @@ import NotesCore
         check(blocked.note.title.isEmpty && blocked.undoManager.canRedo && blocked.dirty, "text undo works in memory while atomic writes fail")
         blocked.redo()
         check(blocked.note.title == "unsaved edit" && blocked.undoManager.canUndo, "failed-save undo retains redo and undo history")
-        try FileManager.default.removeItem(at: blockedFile); try blocked.commit()
+        try FileManager.default.removeItem(at: blockedFile)
+        try blockedSavedData.write(to: blockedFile); try blocked.commit()
         blocked.undoManager.beginUndoGrouping(); blocked.importURLs([file]); blocked.undoManager.endUndoGrouping()
         let blockedAttachment = blocked.note.attachments[0]
         blocked.undoManager.beginUndoGrouping(); blocked.removeAttachment(blockedAttachment); blocked.undoManager.endUndoGrouping(); try blocked.commit()
+        let blockedAttachmentSavedData = try Data(contentsOf: blockedFile)
         try FileManager.default.removeItem(at: blockedFile); try FileManager.default.createDirectory(at: blockedFile, withIntermediateDirectories: false)
         blocked.undo()
         check(blocked.note.attachments.count == 1 && blocked.undoManager.canRedo, "attachment undo restores the memory document before disk recovery")
         do { try blocked.commit(); fatalError("expected blocked attachment restore") } catch {}
         check(blocked.undoManager.canRedo && blocked.dirty, "failed attachment materialization leaves retryable history")
         blocked.redo(); blocked.undo()
-        try FileManager.default.removeItem(at: blockedFile); try blocked.commit()
+        try FileManager.default.removeItem(at: blockedFile)
+        try blockedAttachmentSavedData.write(to: blockedFile); try blocked.commit()
         check(try Data(contentsOf: blocked.localURL(for: blocked.note.attachments[0])) == content, "attachment undo can be retried after blocked-save recovery")
 
         let placement = NotesEditorSession(note: try store.create(), store: store)
@@ -248,6 +257,22 @@ import NotesCore
         check(!NotesTooltipPresenter.shared.isPresented && presenter.isPresented, "opening a menu dismisses the tooltip")
         presenter.dismiss(animated: false)
         helpWindow.orderOut(nil)
+        let quitStore = try NotesStore(directory: root.appendingPathComponent("clean-quit"))
+        var quitNote = try quitStore.create()
+        func canQuitAfterExternalSave(openEditor: Bool) throws -> Bool {
+            let stale = try NotesStore(directory: quitStore.directory)
+            let workspace = NotesWorkspace(store: stale)
+            if openEditor { workspace.open(quitNote.id) }
+            quitNote.title = UUID().uuidString; try quitStore.update(quitNote)
+            // Old behavior opens a blocking error alert. Unblock only this harness.
+            let escape = Timer(timeInterval: 0.15, repeats: false) { _ in NSApp.abortModal() }
+            RunLoop.main.add(escape, forMode: .modalPanel)
+            defer { escape.invalidate() }
+            return workspace.prepareToQuit()
+        }
+        check(try canQuitAfterExternalSave(openEditor: false), "clean stale instance can quit without writing over a newer store")
+        check(try canQuitAfterExternalSave(openEditor: true), "unchanged editor can quit after another process saves")
+        try DurabilityProbe.run(root: root, check: check)
         print("UI HARNESS COMPLETE")
     }
 }

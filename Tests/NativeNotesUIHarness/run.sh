@@ -20,8 +20,8 @@ fi
 swiftc -parse-as-library -module-name LineNotesUIHarness -I "$notes_bin" -I "$notes_bin/Modules" \
     "${notes_objects[@]}" \
     Sources/Tendedero/NotesAppIcon.swift Sources/Tendedero/NotesImageCache.swift Sources/Tendedero/NotesTooltip.swift Sources/Tendedero/NotesTheme.swift Sources/Tendedero/NotesPalette.swift Sources/Tendedero/NotesEditorPaper.swift Sources/Tendedero/NotesScrollChrome.swift Sources/Tendedero/NotesEditorTransition.swift Sources/Tendedero/NotesInteraction.swift Sources/Tendedero/NotesMenu.swift Sources/Tendedero/NotesTextMenu.swift Sources/Tendedero/NoteThumbnail.swift \
-    Sources/Tendedero/NotesEditorSession.swift Sources/Tendedero/RichNoteTextView.swift \
-    Sources/Tendedero/NotesWorkspace.swift Sources/Tendedero/NoteEditorView.swift \
+    Sources/Tendedero/NotesEditorSession.swift Sources/Tendedero/RichNoteTextView.swift Sources/Tendedero/NotesContinuousDocument.swift Sources/Tendedero/NotesContinuousTextView.swift Sources/Tendedero/NotesEditorFormatMenu.swift \
+    Sources/Tendedero/NotesWorkspace.swift Sources/Tendedero/NotesEmptyTrashConfirmation.swift Sources/Tendedero/NotesEditorResize.swift Sources/Tendedero/NotesEditorIcon.swift Sources/Tendedero/NoteEditorView.swift \
     Sources/Tendedero/NotesLibraryView.swift Sources/Tendedero/NotesSettingsView.swift \
-    Tests/NativeNotesUIHarness/main.swift -o "$notes_harness/check"
+    Tests/NativeNotesUIHarness/DurabilityProbe.swift Tests/NativeNotesUIHarness/main.swift -o "$notes_harness/check"
 "$notes_harness/check"

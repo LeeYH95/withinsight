@@ -6,7 +6,7 @@
   },
   "claims": [
     {
-      "text": "截图与便笺共享挂绳、夹子和摆动",
+      "text": "截图与闪念共享挂绳、夹子和摆动",
       "evidence": [
         "Sources/Tendedero/PeggedView.swift",
         "Sources/Tendedero/HangingSwing.swift",
@@ -14,17 +14,19 @@
       ]
     },
     {
-      "text": "文字、待办、图片与附件，本地自动保存",
+      "text": "文字、待办、图片与附件连续编辑，本地自动保存与当前草稿恢复",
       "evidence": [
-        "Sources/NotesCore/NoteDocument.swift",
+        "Sources/Tendedero/NotesContinuousTextView.swift",
+        "Sources/Tendedero/NotesContinuousDocument.swift",
         "Sources/NotesCore/NotesStore.swift",
-        "Sources/Tendedero/NoteEditorView.swift"
+        "Sources/NotesCore/NotesRecoveryJournal.swift"
       ]
     },
     {
-      "text": "便笺库支持搜索、分类和排序",
+      "text": "紧凑可缩放的闪念库支持搜索、分类、排序和清空最近删除",
       "evidence": [
-        "Sources/Tendedero/NotesLibraryView.swift"
+        "Sources/Tendedero/NotesLibraryView.swift",
+        "Sources/Tendedero/NotesEmptyTrashConfirmation.swift"
       ]
     },
     {
@@ -42,14 +44,15 @@
       ]
     },
     {
-      "text": "应用内日夜图标；Finder 使用浅色",
+      "text": "编译系统图标资产；运行时日夜图标，Finder 静态浅色",
       "evidence": [
         "Sources/Tendedero/NotesAppIcon.swift",
-        "scripts/build-dev-app.sh"
+        "scripts/build-dev-app.sh",
+        "scripts/check-brand-icons.py"
       ]
     },
     {
-      "text": "当前版本0.5.0、本地签名、最低macOS14",
+      "text": "当前版本 0.5.14 (22)，Apple Silicon、本地签名、最低 macOS 14、未公证",
       "evidence": [
         "scripts/build-release.sh",
         "scripts/build-dev-app.sh"
@@ -123,38 +126,38 @@
     {
       "path": "docs/media/rope-native.png",
       "role": "screenshot",
-      "origin": "native-capture",
-      "source": "docs/launch/ASSETS.md",
+      "origin": "native-view-render",
+      "source": "marketing/source/capture-native.swift",
       "rights": "project-created; upstream UI source under MIT; independent brand",
-      "width": 1920,
-      "height": 246
+      "width": 3840,
+      "height": 492
     },
     {
       "path": "docs/media/editor-light.png",
       "role": "screenshot",
-      "origin": "native-capture",
-      "source": "docs/launch/ASSETS.md",
+      "origin": "native-view-render",
+      "source": "marketing/source/capture-native.swift",
       "rights": "project-created; upstream UI source under MIT; independent brand",
-      "width": 920,
-      "height": 650
+      "width": 1840,
+      "height": 1300
     },
     {
       "path": "docs/media/editor-dark.png",
       "role": "screenshot",
-      "origin": "native-capture",
-      "source": "docs/launch/ASSETS.md",
+      "origin": "native-view-render",
+      "source": "marketing/source/capture-native.swift",
       "rights": "project-created; upstream UI source under MIT; independent brand",
-      "width": 920,
-      "height": 650
+      "width": 1840,
+      "height": 1300
     },
     {
       "path": "docs/media/library-light.png",
       "role": "screenshot",
-      "origin": "native-capture",
-      "source": "docs/launch/ASSETS.md",
+      "origin": "native-view-render",
+      "source": "marketing/source/capture-native.swift",
       "rights": "project-created; upstream UI source under MIT; independent brand",
-      "width": 1080,
-      "height": 720
+      "width": 1640,
+      "height": 1120
     },
     {
       "path": "docs/media/icon-light.png",
@@ -189,6 +192,24 @@
       "rights": "project-created; same approved screenshots and film; no audio",
       "width": 960,
       "height": 540
+    },
+    {
+      "path": "docs/media/settings-light.png",
+      "role": "screenshot",
+      "origin": "native-view-render",
+      "source": "marketing/source/capture-native.swift",
+      "rights": "project-created; fictional demo content; upstream UI source under MIT; Phosphor Icons under MIT",
+      "width": 1520,
+      "height": 1000
+    },
+    {
+      "path": "docs/media/new-menu.png",
+      "role": "screenshot",
+      "origin": "native-view-render",
+      "source": "marketing/source/capture-native.swift",
+      "rights": "project-created; fictional demo content; upstream UI source under MIT; Phosphor Icons under MIT",
+      "width": 496,
+      "height": 322
     }
   ],
   "readmes": [

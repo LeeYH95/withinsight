@@ -1,7 +1,7 @@
 import AppKit
 
-/// The bundle's ICNS supplies Finder and launch-time artwork. The running
-/// application uses the matching approved artwork for its selected appearance.
+/// Finder and Dock use the compiled icon catalog, with ICNS for older systems.
+/// Settings keeps the original artwork; runtime icons retain catalog masking.
 @MainActor enum NotesAppIcon {
     static var displayName: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? "拾片"
@@ -30,7 +30,15 @@ import AppKit
         }
     }
     static func refresh() {
-        guard let image = image() else { return }
+        let name = isDark ? "ShipianDark" : "ShipianLight"
+        if let image = cached[name] { NSApp.applicationIconImage = image; return }
+        // Loading a loose PNG here bypasses the catalog's rounded mask and
+        // produces a different Dock tile from the installed app icon.
+        guard let image = NSImage(named: NSImage.Name(name)) else {
+            NSApp.applicationIconImage = nil
+            return
+        }
+        cached[name] = image
         NSApp.applicationIconImage = image
     }
 }

@@ -6,7 +6,9 @@ import NotesCore
 final class NotesEditorSession: ObservableObject {
     @Published var note: NoteDocument
     @Published var dirty = false
+    @Published var recoveryProtected = false
     @Published var failure: String?
+    var pendingTextFailure: String?
     @Published var attachmentFailure: String?
     @Published var attachmentRetryLabel: String?
     private var attachmentRetry: (() -> Void)?
@@ -23,6 +25,8 @@ final class NotesEditorSession: ObservableObject {
     var onTitleChange: ((String) -> Void)?
     var onPinChange: ((Bool) -> Void)?
     private var pending: DispatchWorkItem?
+    private var recoveryJournal: NotesRecoveryJournal?
+    private var recoveryBase: NoteDocument
     private var lastTypingField: UUID?
     private var lastTypingTime = Date.distantPast
     private let titleFieldID = UUID()
@@ -30,7 +34,7 @@ final class NotesEditorSession: ObservableObject {
     private var backups: [UUID: URL] = [:]
     private let temporaryDirectory: URL
     init(note: NoteDocument, store: NotesStore) {
-        self.note = note; self.store = store
+        self.note = note; self.store = store; recoveryBase = note
         temporaryDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("LineNotes-editor-" + UUID().uuidString, isDirectory: true)
         undoManager.groupsByEvent = true
         undoManager.levelsOfUndo = 100
@@ -38,7 +42,13 @@ final class NotesEditorSession: ObservableObject {
     deinit { pending?.cancel(); let url = temporaryDirectory; DispatchQueue.global().async { try? FileManager.default.removeItem(at: url) } }
     func edited() {
         dirty = true; pending?.cancel()
+        recoveryProtected = false
         onTitleChange?(note.displayTitle)
+        do {
+            if recoveryJournal == nil { recoveryJournal = try NotesRecoveryJournal(directory: store.directory) }
+            try recoveryJournal?.checkpoint(note, basedOn: recoveryBase, attachmentSource: { try self.localURL(for: $0) })
+            recoveryProtected = true
+        } catch { failure = "恢复副本尚未写入；请保持窗口打开并重试保存。" + error.localizedDescription }
         scheduleSave(after: 0.65)
     }
     private func scheduleSave(after delay: TimeInterval) {
@@ -58,15 +68,33 @@ final class NotesEditorSession: ObservableObject {
         recordTypingUndo(note, field: block.id)
         note.blocks[index] = block; edited(); undoRevision += 1
     }
+    private let continuousFieldID = UUID()
+    private var selectionBeforeBodyEdit: NSRange?
+    private(set) var bodySelectionToRestore: NSRange?
+    func captureBodySelection(_ selection: NSRange) { selectionBeforeBodyEdit = selection }
+    func consumeBodySelection() -> NSRange? {
+        defer { bodySelectionToRestore = nil }
+        return bodySelectionToRestore
+    }
+    func updateBlocks(_ blocks: [NoteBlock]) {
+        defer { selectionBeforeBodyEdit = nil }
+        guard note.blocks != blocks else { return }
+        recordTypingUndo(note, field: continuousFieldID, bodySelection: selectionBeforeBodyEdit ?? (textView as? NotesContinuousTextView)?.selectedRange())
+        let previousReferences = Set(note.blocks.compactMap(\.attachmentID))
+        let currentReferences = Set(blocks.compactMap(\.attachmentID))
+        note.blocks = blocks
+        note.attachments.removeAll { previousReferences.contains($0.id) && !currentReferences.contains($0.id) }
+        edited(); undoRevision += 1
+    }
     func changeTitle(_ title: String) {
         guard note.title != title else { return }
         recordTypingUndo(note, field: titleFieldID)
         note.title = title; edited(); undoRevision += 1
     }
-    private func recordTypingUndo(_ previous: NoteDocument, field: UUID) {
+    private func recordTypingUndo(_ previous: NoteDocument, field: UUID, bodySelection: NSRange? = nil) {
         let now = Date()
         if lastTypingField != field || now.timeIntervalSince(lastTypingTime) > 0.8 {
-            registerUndo(previous, name: field == titleFieldID ? "编辑标题" : "编辑正文")
+            registerUndo(previous, name: field == titleFieldID ? "编辑标题" : "编辑正文", bodySelection: bodySelection)
         }
         lastTypingField = field; lastTypingTime = now
     }
@@ -74,24 +102,29 @@ final class NotesEditorSession: ObservableObject {
     func change(_ name: String, _ body: (inout NoteDocument) -> Void) {
         endTypingGroup()
         let previous = note
+        let selection = (textView as? NotesContinuousTextView)?.selectedRange()
         body(&note)
         guard note != previous else { return }
-        registerUndo(previous, name: name)
+        registerUndo(previous, name: name, bodySelection: previous.blocks == note.blocks ? nil : selection)
+        selectionBeforeBodyEdit = nil
         edited(); undoRevision += 1
     }
-    private func registerUndo(_ snapshot: NoteDocument, name: String) {
+    private func registerUndo(_ snapshot: NoteDocument, name: String, bodySelection: NSRange? = nil) {
         undoManager.registerUndo(withTarget: self) { target in
-            MainActor.assumeIsolated { target.restore(snapshot, name: name) }
+            MainActor.assumeIsolated { target.restore(snapshot, name: name, bodySelection: bodySelection) }
         }
         undoManager.setActionName(name)
     }
-    private func restore(_ snapshot: NoteDocument, name: String) {
+    private func restore(_ snapshot: NoteDocument, name: String, bodySelection: NSRange?) {
         endTypingGroup()
         let previous = note
+        let inverseSelection = bodySelection == nil ? nil : bodySelectionToRestore ?? (textView as? NotesContinuousTextView)?.selectedRange()
+        selectionBeforeBodyEdit = nil
+        if let bodySelection { bodySelectionToRestore = bodySelection }
         // Undo changes the in-memory document first. A failed disk write must never
         // consume the user's history or prevent text from being undone.
         note = snapshot
-        registerUndo(previous, name: name)
+        registerUndo(previous, name: name, bodySelection: inverseSelection)
         onPinChange?(snapshot.pinned)
         edited(); undoRevision += 1
     }
@@ -133,6 +166,11 @@ final class NotesEditorSession: ObservableObject {
         }
         if let textView, textView.hasMarkedText() { textView.unmarkText(); textView.publishChange() }
         pending?.cancel(); pending = nil
+        if pendingTextFailure != nil { textView?.publishChange() }
+        if let pendingTextFailure {
+            failure = pendingTextFailure
+            throw NSError(domain: "Shipian.Editor", code: 1, userInfo: [NSLocalizedDescriptionKey: pendingTextFailure])
+        }
         guard dirty else {
             if case .failed = store.saveState { try store.flush() }
             failure = nil; return
@@ -149,18 +187,26 @@ final class NotesEditorSession: ObservableObject {
                 // the import itself. Never let store cleanup delete the only owned copy.
                 for removed in latest.attachments where !retainedIDs.contains(removed.id) { try backUp(removed) }
             } catch {
-                reportAttachmentFailure("附件原副本已保留；尚不能创建撤销备份：" + error.localizedDescription, retryLabel: "重试保存") { [weak self] in
+                reportAttachmentFailure("附件原副本已保留；暂时无法准备撤销所需的附件：" + error.localizedDescription, retryLabel: "重试保存") { [weak self] in
                     guard let self else { return }
                     do { try self.commit(); self.clearAttachmentFailure() } catch { self.failure = error.localizedDescription }
                 }
                 throw error
             }
             try store.update(note)
+            recoveryBase = store.document(id: note.id) ?? note
+            // If cleanup is interrupted, startup compares canonical content and
+            // consumes the old journal without creating a duplicate.
+            try? recoveryJournal?.clear()
             dirty = false; failure = nil
+            recoveryProtected = false
         } catch { failure = error.localizedDescription; throw error }
     }
-    func reload() { if let updated = store.document(id: note.id) { note = updated; dirty = false; failure = nil } }
+    func reload() { if let updated = store.document(id: note.id) { note = updated; recoveryBase = updated; dirty = false; failure = nil } }
     func addBlock(_ kind: NoteBlock.Kind, after id: UUID? = nil) {
+        if let continuous = textView as? NotesContinuousTextView, id == nil, kind == .checklist {
+            continuous.toggleList("checklist"); return
+        }
         let new = NoteBlock(kind: kind)
         change(kind == .checklist ? "添加待办" : "添加段落") { document in
             let index = (id ?? focusedBlock).flatMap { selected in document.blocks.firstIndex { $0.id == selected } }.map { $0 + 1 } ?? document.blocks.count
@@ -185,6 +231,19 @@ final class NotesEditorSession: ObservableObject {
         var storePosition: Int
     }
     private func attachmentInsertion() throws -> AttachmentInsertion {
+        if let view = textView as? NotesContinuousTextView {
+            let value = view.attributedString(), selection = view.selectedRange()
+            let start = min(selection.location, value.length), end = min(NSMaxRange(selection), value.length)
+            let left = value.attributedSubstring(from: NSRange(location: 0, length: start))
+            let right = value.attributedSubstring(from: NSRange(location: end, length: value.length - end))
+            var leading = left.length == 0 ? [] : try NotesContinuousDocument.blocks(from: left, scale: view.readingScale)
+            // A line separator before the attachment already supplies its own boundary.
+            if left.string.hasSuffix("\n"), leading.last?.text.isEmpty == true, leading.last?.kind == .paragraph { leading.removeLast() }
+            var trailing = try NotesContinuousDocument.blocks(from: right, scale: view.readingScale)
+            let used = Set(leading.map(\.id))
+            for index in trailing.indices where used.contains(trailing[index].id) { trailing[index].id = UUID() }
+            return AttachmentInsertion(leading: leading, trailing: trailing, storePosition: leading.count)
+        }
         guard let focusedBlock, let index = note.blocks.firstIndex(where: { $0.id == focusedBlock }) else {
             return AttachmentInsertion(leading: note.blocks, trailing: [], storePosition: note.blocks.count)
         }
@@ -215,6 +274,7 @@ final class NotesEditorSession: ObservableObject {
             try commit()
             endTypingGroup()
             let old = note
+            let selection = (textView as? NotesContinuousTextView)?.selectedRange()
             let plan = try attachmentInsertion()
             let oldIDs = Set(old.attachments.map(\.id))
             var importError: Error?
@@ -225,6 +285,7 @@ final class NotesEditorSession: ObservableObject {
             guard let latest = store.document(id: note.id) else { throw NotesStoreError.noteNotFound }
             let additions = latest.attachments.filter { !oldIDs.contains($0.id) }
             if !additions.isEmpty {
+                recoveryBase = latest
                 let addedIDs = Set(additions.map(\.id))
                 let addedBlocks = latest.blocks.filter { $0.attachmentID.map(addedIDs.contains) == true }
                 note = old
@@ -232,9 +293,9 @@ final class NotesEditorSession: ObservableObject {
                 note.blocks = plan.leading + addedBlocks + plan.trailing
                 for attachment in additions {
                     do { try backUp(attachment) }
-                    catch { reportAttachmentFailure("附件已添加，但暂不能撤销移除：" + error.localizedDescription, retryLabel: "重试备份") { [weak self] in self?.retryBackup(attachment) } }
+                    catch { reportAttachmentFailure("附件已添加，但暂不能撤销移除：" + error.localizedDescription, retryLabel: "重试") { [weak self] in self?.retryBackup(attachment) } }
                 }
-                registerUndo(old, name: "添加附件"); undoRevision += 1
+                registerUndo(old, name: "添加附件", bodySelection: selection); undoRevision += 1
                 focusedBlock = plan.trailing.first?.id
                 edited()
                 do { try commit() } catch { if importError == nil { importError = error } }
@@ -260,7 +321,7 @@ final class NotesEditorSession: ObservableObject {
     func retryAttachments() { attachmentRetry?() }
     private func retryBackup(_ attachment: NoteAttachment) {
         do { try backUp(attachment); clearAttachmentFailure() }
-        catch { reportAttachmentFailure("附件备份失败：" + error.localizedDescription, retryLabel: "重试备份") { [weak self] in self?.retryBackup(attachment) } }
+        catch { reportAttachmentFailure("暂时无法准备附件撤销：" + error.localizedDescription, retryLabel: "重试") { [weak self] in self?.retryBackup(attachment) } }
     }
     func pasteImage(_ image: NSImage) {
         do {
@@ -270,6 +331,9 @@ final class NotesEditorSession: ObservableObject {
             try data.write(to: url)
             importURLs([url])
         } catch { reportAttachmentFailure("图片未能粘贴：" + error.localizedDescription, retryLabel: "重试粘贴") { [weak self] in self?.pasteImage(image) } }
+    }
+    func prepareAttachmentsForRemoval(_ attachments: [NoteAttachment]) throws {
+        for attachment in attachments { try backUp(attachment) }
     }
     private func backUp(_ attachment: NoteAttachment) throws {
         if let existing = backups[attachment.id],
@@ -291,7 +355,7 @@ final class NotesEditorSession: ObservableObject {
                 if document.blocks.isEmpty { document.blocks = [NoteBlock()] }
             }
             clearAttachmentFailure()
-        } catch { reportAttachmentFailure("无法备份附件以供撤销：" + error.localizedDescription, retryLabel: "重试移除") { [weak self] in self?.removeAttachment(attachment) } }
+        } catch { reportAttachmentFailure("暂时无法撤销附件移除：" + error.localizedDescription, retryLabel: "重试移除") { [weak self] in self?.removeAttachment(attachment) } }
     }
     static func attachmentPanel(imagesOnly: Bool) -> NSOpenPanel {
         let panel = NSOpenPanel()
@@ -329,11 +393,12 @@ final class NotesEditorSession: ObservableObject {
         } catch { reportAttachmentFailure("附件导出失败：" + error.localizedDescription, retryLabel: "重试导出") { [weak self] in self?.exportAttachment(attachment) } }
     }
     var readableText: String {
-        ([note.displayTitle] + note.blocks.map { block in
+        if pendingTextFailure != nil, let view = textView as? NotesContinuousTextView { return note.displayTitle + "\n" + view.plainTextForBackup }
+        return ([note.displayTitle] + note.blocks.map { block in
             switch block.kind { case .checklist: return "\(block.isChecked ? "☑" : "☐") \(block.text)"; default: return block.text }
         }).joined(separator: "\n")
     }
-    func copyBackup() { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(readableText, forType: .string) }
+    func copyCurrentText() { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(readableText, forType: .string) }
     func format(_ action: NotesTextFormat) { endTypingGroup(); textView?.format(action); textView?.window?.makeFirstResponder(textView); endTypingGroup() }
     func undo() { endTypingGroup(); undoManager.undo(); undoRevision += 1 }
     func redo() { endTypingGroup(); undoManager.redo(); undoRevision += 1 }

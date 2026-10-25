@@ -77,10 +77,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         panel.placeOnScreen()
         updateCapacity()
 
-        let loading = NotesWorkspace.makeWindow(title: "正在打开便笺", size: NSSize(width: 340, height: 90), minimum: NSSize(width: 340, height: 90))
+        let loading = NotesWorkspace.makeWindow(title: "正在打开闪念", size: NSSize(width: 340, height: 90), minimum: NSSize(width: 340, height: 90))
         loading.contentView = NSHostingView(rootView: HStack(spacing: 14) {
             ProgressView().controlSize(.small)
-            Text("正在打开便笺…").font(.system(size: 14))
+            Text("正在打开闪念…").font(.system(size: 14))
             Spacer()
             NotesIconButton(symbol: "xmark", label: "取消打开 · Esc") { NSApp.terminate(nil) }
         }.padding(22).foregroundStyle(NotesTheme.text).background(NotesTheme.shell).clipShape(RoundedRectangle(cornerRadius: 22)))
@@ -268,7 +268,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         startWatcher()
     }
 
-    /// Watching the clipboard is opt in, from the menu bar only.
+    private func setScreenshotWatching(_ enabled: Bool) {
+        guard !LaunchOptions.demo else { return }
+        UserDefaults.standard.set(enabled, forKey: "notesWatchScreenshots")
+        startWatcher()
+    }
+
+    /// Watching the clipboard is opt in, from Preferences or the menu bar.
     private func setClipboard(_ on: Bool) {
         guard !LaunchOptions.demo else { return }
         ClipboardWatcher.isEnabled = on
@@ -424,6 +430,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func setRevealed(_ on: Bool) {
         guard on != isRevealed else { return }
+        if !on { NotesMenuPresenter.shared.dismiss(ifAnchoredTo: panel) }
         isRevealed = on
         line.revealed = on
         // It always comes down showing the newest.
@@ -683,9 +690,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
 
-        menu.addItem(ClosureMenuItem("新建便笺", key: "n") { [weak self] in self?.workspace.newNote() })
-        menu.addItem(ClosureMenuItem("全部便笺", key: "f") { [weak self] in self?.workspace.showLibrary() })
-        menu.addItem(ClosureMenuItem("便笺设置…", key: ",") { [weak self] in self?.workspace.showSettings() })
+        menu.addItem(ClosureMenuItem("新建闪念", key: "n") { [weak self] in self?.workspace.newNote() })
+        menu.addItem(ClosureMenuItem("全部闪念", key: "f") { [weak self] in self?.workspace.showLibrary() })
+        menu.addItem(ClosureMenuItem("闪念设置…", key: ",") { [weak self] in self?.workspace.showSettings() })
         menu.addItem(.separator())
 
         let toggleItem = ClosureMenuItem(isRevealed ? L("Hide line") : L("Show line")) { [weak self] in
@@ -704,9 +711,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(clearItem)
 
         let watching = ClosureMenuItem("启用截图监听") { [weak self] in
-            let enabled = !UserDefaults.standard.bool(forKey: "notesWatchScreenshots")
-            UserDefaults.standard.set(enabled, forKey: "notesWatchScreenshots")
-            self?.startWatcher()
+            self?.setScreenshotWatching(!UserDefaults.standard.bool(forKey: "notesWatchScreenshots"))
         }
         watching.state = !LaunchOptions.demo && UserDefaults.standard.bool(forKey: "notesWatchScreenshots") ? .on : .off
         watching.isEnabled = !LaunchOptions.demo
@@ -717,7 +722,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         inbox.state = Inbox.isEnabled ? .on : .off
         inbox.isEnabled = !LaunchOptions.demo
-        inbox.toolTip = L("Screenshots hang instantly and skip the Desktop")
         menu.addItem(inbox)
 
         let clipboard = ClosureMenuItem(L("Hang copied images")) { [weak self] in
@@ -725,7 +729,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         clipboard.state = ClipboardWatcher.isEnabled ? .on : .off
         clipboard.isEnabled = !LaunchOptions.demo
-        clipboard.toolTip = L("Images you copy hang on the line too")
         menu.addItem(clipboard)
 
         let bringDown = NSMenuItem(title: L("Bring the line down"), action: nil, keyEquivalent: "")
@@ -848,7 +851,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(ClosureMenuItem("退出 " + LaunchOptions.appName, key: "q") {
             NSApp.terminate(nil)
         })
-        let symbols = ["新建便笺": "square.and.pencil", "全部便笺": "square.grid.2x2", "便笺设置…": "slider.horizontal.3",
+        let symbols = ["新建闪念": "square.and.pencil", "全部闪念": "square.grid.2x2", "闪念设置…": "slider.horizontal.3",
                        L("Show line"): "arrow.down.to.line", L("Hide line"): "arrow.up.to.line",
                        L("Take everything down"): "tray.and.arrow.down", "启用截图监听": "camera.viewfinder",
                        L("Also watch folders"): "folder", L("Keep on line"): "pin", L("Size"): "rectangle.expand.vertical",
@@ -858,7 +861,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private static func toggleLaunchAtLogin() {
         do {
-            if SMAppService.mainApp.status == .enabled {
+            if SMAppService.mainApp.status == .enabled || SMAppService.mainApp.status == .requiresApproval {
                 try SMAppService.mainApp.unregister()
             } else {
                 try SMAppService.mainApp.register()
@@ -895,6 +898,30 @@ private extension AppDelegate {
             notes = try await NotesStore.open(directory: LaunchOptions.directory)
             if LaunchOptions.demo { try DemoNotes.seed(notes) }
             workspace = NotesWorkspace(store: notes)
+            workspace.settingsActions = NotesSettingsActions(
+                systemAvailable: !LaunchOptions.demo,
+                read: { [weak self] in
+                    NotesSettingsSnapshot(
+                        watchesScreenshots: !LaunchOptions.demo && UserDefaults.standard.bool(forKey: "notesWatchScreenshots"),
+                        copiesImages: !LaunchOptions.demo && ClipboardWatcher.isEnabled,
+                        loginEnabled: !LaunchOptions.demo && SMAppService.mainApp.status == .enabled,
+                        loginNeedsApproval: !LaunchOptions.demo && SMAppService.mainApp.status == .requiresApproval,
+                        screenshotFolder: self?.watcher?.folder ?? ScreenshotWatcher.screenshotFolder(),
+                        extraFolders: Self.extraFolders,
+                        capacity: Line.keepOnLine,
+                        shortcut: (Shortcut.current?.display ?? "未设置") + (LaunchOptions.demo ? " · 验收模式未注册" : ""))
+                },
+                watchScreenshots: { [weak self] enabled in self?.setScreenshotWatching(enabled) },
+                copyImages: { [weak self] enabled in self?.setClipboard(enabled) },
+                toggleLogin: { guard !LaunchOptions.demo else { return }; Self.toggleLaunchAtLogin() },
+                chooseFolder: { [weak self] in guard !LaunchOptions.demo else { return }; self?.chooseExtraFolder() },
+                removeFolder: { [weak self] folder in
+                    guard !LaunchOptions.demo else { return }
+                    Self.extraFolders.removeAll { $0.standardizedFileURL == folder.standardizedFileURL }
+                    self?.startWatcher()
+                },
+                setCapacity: { [weak self] value in self?.setKeep(value) },
+                changeShortcut: { [weak self] in guard !LaunchOptions.demo else { return }; self?.changeShortcut() })
             workspace.onFocus = { [weak self] id in self?.line.selectedNoteID = id }
             workspace.editorTransitionAnchor = { [weak self] noteID in
                 guard let self, self.line.revealed, self.panel.isVisible, let content = self.panel.contentView else { return nil }
@@ -931,9 +958,9 @@ private extension AppDelegate {
                         .appendingPathComponent(UUID().uuidString, isDirectory: true)
                     let unsafe = CharacterSet.controlCharacters.union(CharacterSet(charactersIn: "/:"))
                     let name = String(note.displayTitle.components(separatedBy: unsafe).joined(separator: "-").prefix(80))
-                    let folder = session.appendingPathComponent(name == "." || name == ".." ? "便笺" : name, isDirectory: true)
+                    let folder = session.appendingPathComponent(name == "." || name == ".." ? "闪念" : name, isDirectory: true)
                     try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-                    let file = folder.appendingPathComponent("便笺.md")
+                    let file = folder.appendingPathComponent("闪念.md")
                     try self.notes.exportMarkdown(id, to: file)
                     // Finder must copy the container, including the relative
                     // attachment directory; a lone .md would have broken links.
@@ -965,8 +992,23 @@ private extension AppDelegate {
             refreshNoteAppearance()
             return true
         } catch {
-            presentNotesError(error)
+            presentNotesOpenFailure(error)
             return false
+        }
+    }
+
+    func presentNotesOpenFailure(_ error: Error) {
+        let directory = LaunchOptions.directory
+        loadingWindow?.orderOut(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "无法打开闪念资料库"
+        alert.informativeText = error.localizedDescription + "\n\n原有资料仍保留在本机，未被替换。你可以查看资料文件夹，或关闭应用后重试。"
+        alert.addButton(withTitle: "查看资料文件夹")
+        alert.addButton(withTitle: "关闭")
+        if alert.runModal() == .alertFirstButtonReturn {
+            NSWorkspace.shared.open(directory)
         }
     }
 
@@ -1000,7 +1042,7 @@ private extension AppDelegate {
 
     func presentNotesError(_ error: Error) {
         let alert = NSAlert()
-        alert.messageText = "便笺操作未完成"
+        alert.messageText = "闪念操作未完成"
         alert.informativeText = error.localizedDescription + "\n文件保留在：" + LaunchOptions.directory.path
         alert.addButton(withTitle: "知道了")
         NSApp.activate(ignoringOtherApps: true)
@@ -1011,15 +1053,15 @@ private extension AppDelegate {
         let main = NSMenu()
         let app = NSMenuItem()
         let appMenu = NSMenu(title: LaunchOptions.appName)
-        appMenu.addItem(ClosureMenuItem("便笺设置…", key: ",") { [weak self] in self?.workspace.showSettings() })
+        appMenu.addItem(ClosureMenuItem("闪念设置…", key: ",") { [weak self] in self?.workspace.showSettings() })
         appMenu.addItem(.separator())
         appMenu.addItem(ClosureMenuItem("退出 " + LaunchOptions.appName, key: "q") { NSApp.terminate(nil) })
         app.submenu = appMenu
         main.addItem(app)
         let file = NSMenuItem(title: "文件", action: nil, keyEquivalent: "")
         let fileMenu = NSMenu(title: "文件")
-        fileMenu.addItem(ClosureMenuItem("新建便笺", key: "n") { [weak self] in self?.workspace.newNote() })
-        fileMenu.addItem(ClosureMenuItem("全部便笺", key: "f") { [weak self] in self?.workspace.showLibrary() })
+        fileMenu.addItem(ClosureMenuItem("新建闪念", key: "n") { [weak self] in self?.workspace.newNote() })
+        fileMenu.addItem(ClosureMenuItem("全部闪念", key: "f") { [weak self] in self?.workspace.showLibrary() })
         fileMenu.addItem(ClosureMenuItem("显示或收起挂绳", key: "L") { [weak self] in self?.toggle() })
         fileMenu.addItem(.separator())
         fileMenu.addItem(ClosureMenuItem("收起当前窗口", key: "w") { NSApp.keyWindow?.performClose(nil) })

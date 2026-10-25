@@ -353,8 +353,8 @@ final class NotesCoreTests: XCTestCase {
     }
 
     func testDisplayTitleUsesOnlyTrimmedExplicitTitleOrApprovedFallback() {
-        XCTAssertEqual(NoteDocument(title: "  \n ").displayTitle, "未命名便笺")
-        XCTAssertEqual(NoteDocument(blocks: [NoteBlock(text: "\n  First idea\nMore details")]).displayTitle, "未命名便笺")
+        XCTAssertEqual(NoteDocument(title: "  \n ").displayTitle, "未命名闪念")
+        XCTAssertEqual(NoteDocument(blocks: [NoteBlock(text: "\n  First idea\nMore details")]).displayTitle, "未命名闪念")
         XCTAssertEqual(NoteDocument(title: "  Explicit title  ").displayTitle, "Explicit title")
     }
 }

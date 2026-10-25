@@ -14,7 +14,7 @@ struct NoteThumbnail: View {
                 let checks = note.blocks.filter { $0.kind == .checklist }
                 if !checks.isEmpty {
                     ForEach(Array(checks.prefix(2))) { block in
-                        HStack(alignment: .top, spacing: 9) {
+                        HStack(alignment: .firstTextBaseline, spacing: 9) {
                             Image(systemName: block.isChecked ? "checkmark.square.fill" : "square").foregroundStyle(block.isChecked ? NotesTheme.accent : NotesTheme.muted)
                             Text(block.text.isEmpty ? "待办事项" : block.text).lineLimit(2)
                         }

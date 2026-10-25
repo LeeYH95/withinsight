@@ -13,6 +13,8 @@ public enum NotesStoreError: LocalizedError, Equatable {
     case invalidSource
     case noteMustBeInTrash
     case noteIsInTrash
+    case storeChanged
+    case storeBusy
 
     public var errorDescription: String? {
         switch self {
@@ -23,6 +25,8 @@ public enum NotesStoreError: LocalizedError, Equatable {
         case .invalidSource: return "请选择一个可读取的文件。"
         case .noteMustBeInTrash: return "请先将笔记移入回收站。"
         case .noteIsInTrash: return "请先从回收站恢复这篇笔记。"
+        case .storeChanged: return "资料库已被另一实例或外部程序修改，已停止覆盖。未保存内容仍在窗口，请保留窗口并先复制当前内容。"
+        case .storeBusy: return "另一实例正在保存此资料库，请稍后重试。未保存内容仍保留在窗口。"
         }
     }
 }
@@ -31,9 +35,21 @@ public enum NotesStoreError: LocalizedError, Equatable {
 public final class NotesStore: ObservableObject {
     @Published public private(set) var documents: [NoteDocument] = []
     @Published public private(set) var saveState: SaveState = .saved
+    @Published public private(set) var recoveredDraftCount = 0
+    @Published public private(set) var recoveryWarnings: [String] = []
     public let directory: URL
     private let fileManager = FileManager.default
     private var pendingCleanup: Set<String> = []
+    private var savedData: Data?
+    private var savedDocuments: [NoteDocument] = []
+    private var recoveredDraftIDs: [UUID] = []
+    public var hasPendingChanges: Bool {
+        if documents != savedDocuments { return true }
+        // Referenced files can remain queued for later collection. That is not
+        // unsaved content; only a failed cleanup needs a save retry.
+        if case .failed = saveState { return !pendingCleanup.isEmpty }
+        return false
+    }
     private var storeURL: URL { directory.appendingPathComponent("notes.json") }
     public convenience init(directory: URL) throws {
         let snapshot = try NotesStoreSnapshot.read(directory: directory, readFile: { try Data(contentsOf: $0) })
@@ -42,6 +58,10 @@ public final class NotesStore: ObservableObject {
     private init(snapshot: NotesStoreSnapshot) {
         directory = snapshot.directory
         documents = snapshot.documents
+        savedData = snapshot.savedData
+        savedDocuments = snapshot.documents
+        recoveredDraftIDs = snapshot.recoveredDraftIDs
+        recoverAbandonedDrafts()
     }
     public static func open(directory: URL) async throws -> NotesStore {
         try await open(directory: directory, readFile: { try Data(contentsOf: $0) })
@@ -54,7 +74,7 @@ public final class NotesStore: ObservableObject {
     }
 
     public func document(id: UUID) -> NoteDocument? { documents.first { $0.id == id } }
-
+    public func acknowledgeRecovery() { recoveredDraftCount = 0 }
     public func create(template: NoteTemplate = .text, paper: NotePaper = .blue) throws -> NoteDocument {
         let block = NoteBlock(kind: template == .checklist ? .checklist : .paragraph)
         let note = NoteDocument(blocks: [block], paper: paper)
@@ -114,6 +134,29 @@ public final class NotesStore: ObservableObject {
         documents.remove(at: index)
         pendingCleanup.formUnion(note.attachments.map(\.relativePath))
         try flush()
+    }
+
+    /// Delete only the confirmation's IDs which are still in the trash. Notes
+    /// restored or trashed after the confirmation opened are not new targets.
+    @discardableResult public func emptyTrash(_ ids: Set<UUID>) throws -> Set<UUID> {
+        let removed = documents.filter { ids.contains($0.id) && $0.deletedAt != nil }
+        guard !removed.isEmpty else { return [] }
+        // Validate the complete batch before changing membership or any bytes.
+        for note in removed {
+            for attachment in note.attachments { _ = try url(for: attachment) }
+        }
+        let removedIDs = Set(removed.map(\.id))
+        let previous = documents, previousCleanup = pendingCleanup, previousData = savedData
+        documents.removeAll { removedIDs.contains($0.id) }
+        pendingCleanup.formUnion(removed.flatMap { $0.attachments.map(\.relativePath) })
+        do { try flush() }
+        catch {
+            // If the primary write failed, keep the trash visible for retry.
+            // A later attachment-cleanup error must not resurrect committed IDs.
+            if savedData == previousData { documents = previous; pendingCleanup = previousCleanup }
+            throw error
+        }
+        return removedIDs
     }
 
     public func duplicate(_ id: UUID) throws -> NoteDocument {
@@ -267,19 +310,123 @@ public final class NotesStore: ObservableObject {
     public func flush() throws {
         saveState = .saving
         do {
-            try validateStoreRoot()
-            try rejectSymlink(at: storeURL)
-            for document in documents { try validate(document) }
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            let data = try encoder.encode(NotesStoreFile(documents: documents))
-            // Atomic replacement leaves the previous JSON intact if a write fails.
-            try data.write(to: storeURL, options: .atomic)
-            try cleanUnreferencedAttachments()
-            saveState = .saved
+            try NotesStoreLock.withLock(directory: directory) { try writeChangesLocked() }
         } catch {
             saveState = .failed(error.localizedDescription)
             throw error
+        }
+    }
+
+    private func writeChangesLocked() throws {
+        try validateStoreRoot()
+        try rejectSymlink(at: storeURL)
+        let disk = fileManager.fileExists(atPath: storeURL.path) ? try Data(contentsOf: storeURL) : nil
+        guard disk == savedData else { throw NotesStoreError.storeChanged }
+        for document in documents { try validate(document) }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let data = try encoder.encode(NotesStoreFile(documents: documents, recoveredDraftIDs: recoveredDraftIDs.isEmpty ? nil : recoveredDraftIDs))
+        // Atomic replacement leaves the previous JSON intact if a write fails.
+        try data.write(to: storeURL, options: .atomic)
+        savedData = data
+        savedDocuments = documents
+        try cleanUnreferencedAttachments()
+        saveState = .saved
+    }
+
+    private func recoverAbandonedDrafts() {
+        let scanned = NotesRecoveryJournal.abandoned(in: directory)
+        recoveryWarnings = scanned.warnings
+        guard !scanned.drafts.isEmpty else { return }
+        do {
+            try NotesStoreLock.withLock(directory: directory) {
+                let disk = fileManager.fileExists(atPath: storeURL.path) ? try Data(contentsOf: storeURL) : nil
+                guard disk == savedData else { throw NotesStoreError.storeChanged }
+                var consumed: [AbandonedDraft] = []
+                var changed = false
+                for draft in scanned.drafts {
+                    let record = draft.record!
+                    if recoveredDraftIDs.contains(record.revisionID) { consumed.append(draft); continue }
+                    // Editors start only after create() has saved the note. A
+                    // missing/trashed owner means the user deliberately deleted
+                    // it; a stale journal must not recreate it or its files.
+                    guard let current = documents.first(where: { $0.id == record.base.id }), current.deletedAt == nil else {
+                        consumed.append(draft); continue
+                    }
+                    do {
+                        var recovered = record.document
+                        var remapped = false
+                        for asset in record.assets {
+                            let data = try draft.data(for: asset, paths: paths)
+                            let existing = try paths.safeAttachmentURL(asset.path)
+                            if fileManager.fileExists(atPath: existing.path) {
+                                guard let info = try metadata(at: existing), info.st_mode & S_IFMT == S_IFREG else { throw NotesStoreError.unsafePath }
+                                if try Data(contentsOf: existing) == data { continue }
+                                // Never replace another note's owned attachment bytes.
+                                let old = recovered.attachments.first { $0.relativePath == asset.path }!
+                                let source = draft.location.appendingPathComponent(asset.path)
+                                let replacement = try copyAttachment(from: source, name: old.name, kind: old.kind)
+                                // Several distinct attachment IDs may share one owned
+                                // blob. Keep each reference identity and remap only bytes.
+                                for index in recovered.attachments.indices where recovered.attachments[index].relativePath == asset.path {
+                                    recovered.attachments[index].relativePath = replacement.relativePath
+                                    recovered.attachments[index].byteCount = replacement.byteCount
+                                }
+                                remapped = true
+                            } else {
+                                try fileManager.createDirectory(at: existing.deletingLastPathComponent(), withIntermediateDirectories: true)
+                                try installRecoveredAsset(data, at: existing)
+                            }
+                        }
+                        if let index = documents.firstIndex(where: { $0.id == recovered.id }), documents[index].deletedAt == nil,
+                           !remapped, Self.sameEditorContent(documents[index], record.document) {
+                            // A canonical commit won the race with journal cleanup.
+                        } else if let index = documents.firstIndex(where: { $0.id == recovered.id }), documents[index].deletedAt == nil,
+                                  !remapped, Self.sameEditorContent(documents[index], record.base) {
+                            let latest = documents[index]
+                            recovered.onLine = latest.onLine; recovered.draft = latest.draft
+                            recovered.deletedAt = latest.deletedAt; recovered.wasOnLine = latest.wasOnLine
+                            recovered.updatedAt = Date(); documents[index] = recovered
+                            recoveredDraftCount += 1
+                        } else {
+                            recovered.id = record.recoveredNoteID
+                            recovered.title = record.document.displayTitle + "（恢复副本）"
+                            recovered.onLine = false; recovered.draft = true; recovered.deletedAt = nil; recovered.wasOnLine = false
+                            recovered.createdAt = Date(); recovered.updatedAt = recovered.createdAt
+                            guard !documents.contains(where: { $0.id == recovered.id }) else { throw NotesStoreError.invalidStore }
+                            documents.insert(recovered, at: 0); recoveredDraftCount += 1
+                        }
+                        recoveredDraftIDs.append(record.revisionID); consumed.append(draft); changed = true
+                    } catch { recoveryWarnings.append("一份未保存内容尚不能恢复，恢复副本已保留。" + error.localizedDescription) }
+                }
+                if changed { try writeChangesLocked() }
+                for draft in consumed {
+                    do { try draft.consume() }
+                    catch { recoveryWarnings.append("恢复内容已写入，旧恢复副本暂未清理。" + error.localizedDescription) }
+                }
+            }
+        } catch {
+            saveState = .failed(error.localizedDescription)
+            recoveryWarnings.append("恢复写入暂未完成，恢复副本已保留。" + error.localizedDescription)
+        }
+    }
+
+    private static func sameEditorContent(_ lhs: NoteDocument, _ rhs: NoteDocument) -> Bool {
+        var value = lhs
+        value.updatedAt = rhs.updatedAt; value.onLine = rhs.onLine; value.draft = rhs.draft
+        value.deletedAt = rhs.deletedAt; value.wasOnLine = rhs.wasOnLine
+        return value == rhs
+    }
+
+    private func installRecoveredAsset(_ data: Data, at destination: URL) throws {
+        let temporary = destination.deletingLastPathComponent().appendingPathComponent(".recover-" + UUID().uuidString)
+        defer { try? fileManager.removeItem(at: temporary) }
+        try data.write(to: temporary, options: .withoutOverwriting)
+        let file = try FileHandle(forWritingTo: temporary)
+        defer { try? file.close() }
+        try file.synchronize()
+        guard renamex_np(temporary.path, destination.path, UInt32(RENAME_EXCL)) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
         }
     }
 

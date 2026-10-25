@@ -6,11 +6,11 @@
 | --- | --- | --- |
 | 0–8 秒 | 把截图与灵感挂在眼前 | 拾片图标、价值主张、真实挂绳 |
 | 8–16 秒 | 给一张图补充想法、清单和附件 | 图文编辑器 |
-| 16–24 秒 | 搜索、排序、取下与保留 | 便笺库 |
+| 16–24 秒 | 搜索、排序、取下与保留 | 闪念库 |
 | 24–32 秒 | 深色外观，本地保存，获取版本 | 深色编辑器、GitHub 地址 |
 
-源工程：[marketing/videos/shipian](../../marketing/videos/shipian/)。`STORYBOARD.md` 记录分镜，`build-film.py` 生成场景与原创音轨。使用 HyperFrames 0.8.181 / GSAP 3.14.2；源工程在 macOS 上渲染，中文使用本机系统字体。外部框架和库各自遵循其许可。
+源工程：[marketing/videos/shipian](../../marketing/videos/shipian/)。`STORYBOARD.md` 记录分镜，`build-film.py` 生成场景与原创音轨。使用 HyperFrames 0.8.194 / GSAP 3.14.2；源工程在 macOS 上渲染，中文使用本机系统字体。外部框架和库各自遵循其许可。
 
 配乐由本次编写的正弦合成程序生成，没有使用第三方音乐、声音克隆或未确认授权的音效。重新制作命令见源工程 README。
 
-README 使用 `docs/media/shipian-preview.gif` 直接循环展示同一份 32 秒介绍，960×540、15 fps，无声音，约 6.7 MiB。完整 MP4 保留原分辨率、帧率与配乐，可从 Release 下载。运行 `scripts/make-readme-gif.sh` 可从现有 MP4 重新生成首页预览；需要 FFmpeg。
+README 使用 `docs/media/shipian-preview.gif` 直接循环展示同一份 32 秒介绍，960×540、15 fps，无声音，约 7.4 MiB。完整 MP4 保留原分辨率、帧率与配乐，可从 Release 下载。运行 `scripts/make-readme-gif.sh` 可从现有 MP4 重新生成首页预览；需要 FFmpeg。

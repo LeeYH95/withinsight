@@ -1,12 +1,15 @@
 # 素材来源
 
-- `docs/media/rope-native.png`、`editor-light.png`、`editor-dark.png`、`library-light.png`：本项目 2026-10-21 的原生应用界面验收截图，采用 DemoNotes.swift 中的虚构演示笔记及本项目生成的示例照片。未使用用户个人截图或真实工作资料。
-- `docs/media/icon-light.png`、`icon-dark.png`：用户确认的拾片 A 方案深化图标，为本项目独立生成，已复制到 Sources/Tendedero/Resources/Brand，未重画上游 Tendedero 图标。
-- `Sources/Tendedero/Resources/Demo/*.png`、`NoteAtmosphere.png`：本项目独立生成的画廊、建筑演示图与柔和背景。
-- Banner、三张功能图、社交预览：由 marketing/source/visuals.html 将上述图标与真实截图排版导出，没有替换截图内控件。
-- MP4、封面与视频检查拼图：marketing/videos/shipian 的源工程输出。视频是截图讲解动画，不是实时操作录屏。
-- `docs/media/shipian-preview.gif`：从同一份介绍视频转换的首页循环预览，保留完整 32 秒画面顺序；960×540、15 fps，无声音。通过 `scripts/make-readme-gif.sh` 重新生成，没有重新绘制产品界面。
-- 配乐：build-film.py 在本次制作中原创合成的和弦/钟琴音色，未使用第三方录音。
-- GSAP：官方 npm gsap@3.14.2，版权注释保留，适用 GSAP Standard License，参见视频源工程 README。项目根目录 MIT 许可不替代第三方库的许可。
+本次宣传资料对应拾片 0.5.14，更新日期 2026-10-25。
 
-素材索引、尺寸、用途及产品承诺对应源码见根目录 launch-manifest.json。上游品牌限制与来源见 NOTICE.md。
+- `docs/media/rope-native.png`、`editor-light.png`、`editor-dark.png`、`library-light.png`、`settings-light.png`、`new-menu.png`：由 `marketing/source/capture-native.swift` 使用当前原生界面类渲染导出。采用独立临时数据目录与虚构 DemoNotes，示例照片由本项目生成；没有读取个人闪念、桌面或其他应用窗口。Retina 输出保留原生控件，未重画界面。
+- `docs/media/icon-light.png`、`icon-dark.png`：维护者确认的拾片独立品牌图标，原品牌图保持不变。应用系统图标另由 Icon Composer 编译，制作命令见 `scripts/make-brand-icons.py`。
+- `Sources/Tendedero/Resources/Demo/*.png`、`NoteAtmosphere.png`：本项目独立生成的画廊、建筑演示图与柔和背景。
+- Banner、三张功能图、社交预览：`marketing/source/visuals.html` 将上述图标与原生截图排版导出。复现命令见 `marketing/source/README.md`。
+- MP4、封面与视频检查拼图：`marketing/videos/shipian` 源工程输出，已替换为当前编辑器与紧凑闪念库界面。视频是截图讲解动画，没有将其表述为实时操作录屏。
+- `docs/media/shipian-preview.gif`：从同一份 32 秒视频转换，960×540、15 fps、无声音、循环播放。通过 `scripts/make-readme-gif.sh` 生成。
+- 配乐：`build-film.py` 原创合成的和弦与钟琴音色，沿用原片音轨，没有使用第三方录音。
+- 编辑器图标：Phosphor Icons，MIT 许可，声明见根目录 `PHOSPHOR-LICENSE.txt`。
+- GSAP：官方 npm `gsap@3.14.2`，版权注释保留，适用 GSAP Standard License。根目录 MIT 许可不替代第三方库许可。
+
+素材索引、尺寸及功能承诺对应源码见 `launch-manifest.json`。上游来源与品牌限制见 `NOTICE.md`。

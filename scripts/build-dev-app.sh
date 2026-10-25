@@ -15,10 +15,12 @@ mv -f "$APP/Contents/MacOS/LineNotes.next" "$APP/Contents/MacOS/LineNotes"
 cp Sources/Tendedero/Resources/NoteAtmosphere.png "$APP/Contents/Resources/NoteAtmosphere.png"
 for dir in Sources/Tendedero/Resources/*.lproj; do cp -R "$dir" "$APP/Contents/Resources/"; done
 cp LICENSE "$APP/Contents/Resources/UPSTREAM-LICENSE.txt"
+cp PHOSPHOR-LICENSE.txt "$APP/Contents/Resources/PHOSPHOR-LICENSE.txt"
 if [[ "${LINENOTES_BRAND_ICONS:-0}" == "1" ]]; then
     python3 scripts/make-brand-icons.py --source Sources/Tendedero/Resources/Brand --output build/ShipianIcons
-    cp build/ShipianIcons/ShipianLight.icns build/ShipianIcons/ShipianDark.icns "$APP/Contents/Resources/"
+    cp build/ShipianIcons/ShipianLight.icns build/ShipianIcons/Assets.car "$APP/Contents/Resources/"
     cp build/ShipianIcons/ShipianIconLight.png build/ShipianIcons/ShipianIconDark.png "$APP/Contents/Resources/"
+    rm -f "$APP/Contents/Resources/ShipianDark.icns" "$APP/Contents/Resources/ShipianSystemIconLight.png" "$APP/Contents/Resources/ShipianSystemIconDark.png"
 else
     swift scripts/make-dev-icon.swift build/LineNotes.iconset
     iconutil -c icns build/LineNotes.iconset -o "$APP/Contents/Resources/LineNotes.icns"
@@ -54,6 +56,8 @@ plutil -replace CFBundleShortVersionString -string "${LINENOTES_VERSION:-0.3.0}"
 plutil -replace CFBundleVersion -string "${LINENOTES_BUILD:-3}" "$APP/Contents/Info.plist"
 if [[ "${LINENOTES_BRAND_ICONS:-0}" == "1" ]]; then
     plutil -replace CFBundleIconFile -string ShipianLight "$APP/Contents/Info.plist"
+    plutil -replace CFBundleIconName -string ShipianLight "$APP/Contents/Info.plist"
+    python3 scripts/check-brand-icons.py "$APP"
 fi
 codesign --force --deep --sign - "$APP"
 codesign --verify --deep --strict "$APP"

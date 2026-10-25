@@ -46,15 +46,15 @@ struct GrabArea: NSViewRepresentable {
             view.onTrash = { line.onDeleteNote?(noteID) }
             view.onDiscard = { line.discard(id) }
             view.onPressChange = { line.pressedID = $0 ? id : nil }
-            view.setAccessibilityLabel("\(item.noteTitle ?? "便笺")，点按编辑；角落按钮从绳上取下")
+            view.setAccessibilityLabel("\(item.noteTitle ?? "闪念")，点按编辑；角落按钮从绳上取下")
             view.hoverHelp = "点按编辑 · 拖动排序 · 拖出为含附件的 Markdown 文件夹"
-            view.crossHelp = "从挂绳取下，保留便笺"
+            view.crossHelp = "从挂绳取下，保留闪念"
             view.setAccessibilityHelp(view.hoverHelp)
             view.toolTip = nil
             view.menuProvider = {
                 let menu = NSMenu()
                 menu.autoenablesItems = false
-                menu.addItem(ClosureMenuItem("打开便笺") { line.open(id) })
+                menu.addItem(ClosureMenuItem("打开闪念") { line.open(id) })
                 menu.addItem(ClosureMenuItem("复制内容") { line.copy(id) })
                 menu.addItem(ClosureMenuItem("制作副本") { line.onDuplicateNote?(noteID) })
                 menu.addItem(ClosureMenuItem("导出 Markdown…") { line.onExportNote?(noteID) })

@@ -3,6 +3,31 @@ import XCTest
 @testable import Tendedero
 
 final class NotesImageCacheTests: XCTestCase {
+    @MainActor func testAwaitingThumbnailLoadsCoalesceAndVisibleResultsSurviveCachePressure() async throws {
+        let calls = LockedReads()
+        let cache = NotesImageCache { _ in
+            calls.record(main: Thread.isMainThread)
+            let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 2048, pixelsHigh: 1536, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+            let image = NSImage(size: bitmap.size); image.addRepresentation(bitmap); return image
+        }
+        let firstURL = URL(fileURLWithPath: "/fixture/thumbnail-0.png")
+        async let first = cache.loadedImage(at: firstURL)
+        async let duplicate = cache.loadedImage(at: firstURL)
+        let (a,b) = await (first,duplicate)
+        XCTAssertTrue(a === b)
+        var visible = [try XCTUnwrap(a)]
+        for i in 1..<15 {
+            let loaded = await cache.loadedImage(at: URL(fileURLWithPath: "/fixture/thumbnail-\(i).png"))
+            visible.append(try XCTUnwrap(loaded))
+        }
+        let completedRevision = cache.revision
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(visible.count,15)
+        XCTAssertTrue(visible.allSatisfy { $0.representations.first?.pixelsWide == 2048 })
+        XCTAssertEqual(calls.values.count,15,"Visible thumbnails keep their result instead of re-requesting evicted images on every cache publication")
+        XCTAssertEqual(cache.revision,completedRevision)
+        XCTAssertTrue(calls.values.allSatisfy { !$0 })
+    }
     @MainActor func testSlowAttachmentReadDoesNotBlockUIAndLoadsOnlyOnce() async throws {
         let image = NSImage(size: NSSize(width: 40, height: 30))
         let calls = LockedReads()

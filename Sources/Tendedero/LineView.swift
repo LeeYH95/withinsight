@@ -109,7 +109,7 @@ struct LineView: View {
 
 private struct Hint: View {
     var body: some View {
-        Text("写一张便笺，或截下一点灵感")
+        Text("记一条闪念，或截下一点灵感")
             .font(.system(size: 12, weight: .medium, design: .rounded))
             .foregroundStyle(.secondary)
             .padding(.horizontal, 12)

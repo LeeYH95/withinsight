@@ -23,5 +23,8 @@ final class AttachmentPanelTests: XCTestCase {
         let image = try XCTUnwrap(NotesImageDecoder.read(url))
         XCTAssertEqual(image.size.width / image.size.height, 3, accuracy: 0.01)
         XCTAssertLessThanOrEqual(image.representations[0].pixelsWide, 2048)
+        let thumbnail = try XCTUnwrap(NotesImageDecoder.read(url, maximumPixelSize: 640))
+        XCTAssertEqual(thumbnail.size.width / thumbnail.size.height, 3, accuracy: 0.01)
+        XCTAssertLessThanOrEqual(thumbnail.representations[0].pixelsWide, 640)
     }
 }

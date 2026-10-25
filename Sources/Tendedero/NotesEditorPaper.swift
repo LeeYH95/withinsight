@@ -2,8 +2,8 @@ import AppKit
 import SwiftUI
 import NotesCore
 
-/// Only the expanded editor uses this asset; existing hanging thumbnails keep
-/// NotesTheme.paper and the original frame unchanged.
+/// The editor and library preview share one paper surface. Hanging thumbnails
+/// retain their existing NotesTheme.paper appearance.
 struct NotesEditorPaper: View {
     let paper: NotePaper
     @Environment(\.colorScheme) private var scheme

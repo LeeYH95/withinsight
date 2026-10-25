@@ -32,12 +32,15 @@ private final class NotesTooltipPanel: NSPanel {
     private weak var originWindow: NSWindow?
     private var monitors: [Any] = []
     private var observers: [NSObjectProtocol] = []
+    private let pointerLocation: () -> NSPoint
     var isPresented: Bool { panel != nil }
+
+    init(pointerLocation: @escaping () -> NSPoint = { NSEvent.mouseLocation }) { self.pointerLocation = pointerLocation }
 
     func show(_ text: String, from view: NSView) {
         guard !text.isEmpty, let window = view.window, window.isVisible,
               !view.isHiddenOrHasHiddenAncestor, !view.visibleRect.isEmpty else { return }
-        let point = view.convert(window.convertPoint(fromScreen: NSEvent.mouseLocation), from: nil)
+        let point = view.convert(window.convertPoint(fromScreen: pointerLocation()), from: nil)
         guard view.visibleRect.contains(point) else { return }
         if anchorView === view, panel?.title == text { return }
         dismiss()
@@ -46,17 +49,23 @@ private final class NotesTooltipPanel: NSPanel {
         let screen = NSScreen.screens.first { $0.frame.contains(NSPoint(x: anchor.midX, y: anchor.midY)) } ?? window.screen ?? NSScreen.main
         let visible = screen?.visibleFrame ?? window.frame
         let font = NSFont.systemFont(ofSize: 12)
-        let textWidth = min(320, max(80, visible.width - 42))
-        let measured = (text as NSString).boundingRect(with: NSSize(width: textWidth, height: .greatestFiniteMagnitude),
-                                                       options: [.usesLineFragmentOrigin, .usesFontLeading],
-                                                       attributes: [.font: font])
-        let size = NSSize(width: ceil(measured.width) + 22, height: ceil(measured.height) + 16)
+        let textWidth = min(320, max(1, visible.width - 38))
+        let label = NSTextField(wrappingLabelWithString: text)
+        label.font = font
+        label.maximumNumberOfLines = 0
+        label.lineBreakMode = .byWordWrapping
+        // Measure the actual cell, including its padding and CJK fallback fonts.
+        // NSString's glyph bounds can be narrower than NSTextField's drawing area.
+        let measured = label.cell!.cellSize(forBounds: NSRect(x: 0, y: 0, width: textWidth, height: 10_000))
+        let labelWidth = min(textWidth, ceil(measured.width))
+        let labelHeight = ceil(label.cell!.cellSize(forBounds: NSRect(x: 0, y: 0, width: labelWidth, height: 10_000)).height)
+        let size = NSSize(width: labelWidth + 22, height: labelHeight + 16)
         let popup = NotesTooltipPanel(contentRect: NotesTooltipGeometry.frame(anchor: anchor, size: size, visible: visible),
                                       styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         popup.title = text
         popup.backgroundColor = .clear
         popup.isOpaque = false
-        popup.hasShadow = false
+        popup.hasShadow = true
         popup.ignoresMouseEvents = true
         popup.isReleasedWhenClosed = false
         popup.hidesOnDeactivate = true
@@ -67,18 +76,16 @@ private final class NotesTooltipPanel: NSPanel {
         let content = NSView(frame: NSRect(origin: .zero, size: size))
         content.wantsLayer = true
         content.layer?.cornerRadius = 9
-        let label = NSTextField(wrappingLabelWithString: text)
-        label.font = font
-        label.frame = NSRect(x: 11, y: 8, width: size.width - 22, height: size.height - 16)
+        label.frame = NSRect(x: 11, y: 8, width: labelWidth, height: labelHeight)
         label.isSelectable = false
         label.setAccessibilityLabel(text)
         let dark = popup.appearance?.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-        content.layer?.backgroundColor = NSColor(srgbRed: dark ? 0.87 : 0.20,
-                                                 green: dark ? 0.90 : 0.24,
-                                                 blue: dark ? 0.95 : 0.31, alpha: 0.98).cgColor
-        label.textColor = NSColor(srgbRed: dark ? 0.14 : 0.97,
-                                 green: dark ? 0.17 : 0.98,
-                                 blue: dark ? 0.22 : 0.99, alpha: 1)
+        content.layer?.backgroundColor = NSColor(srgbRed: dark ? 0.18 : 1,
+                                                 green: dark ? 0.21 : 1,
+                                                 blue: dark ? 0.25 : 1, alpha: 1).cgColor
+        content.layer?.borderWidth = 1
+        content.layer?.borderColor = NSColor(srgbRed: dark ? 0.29 : 0.86,green: dark ? 0.33 : 0.89,blue: dark ? 0.39 : 0.92,alpha:1).cgColor
+        label.textColor = NSColor(srgbRed: dark ? 0.90 : 0.15,green: dark ? 0.92 : 0.19,blue: dark ? 0.96 : 0.24,alpha:1)
         content.addSubview(label)
         popup.contentView = content
         panel = popup; anchorView = view; originWindow = window

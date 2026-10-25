@@ -5,7 +5,7 @@ import NotesCore
  enum NotesTextFormat { case bold, italic, underline, bullets }
 
 @MainActor
-final class NotesTextView: NSTextView {
+class NotesTextView: NSTextView {
     override func menu(for event: NSEvent) -> NSMenu? { nil }
     override func rightMouseDown(with event: NSEvent) { NotesTextMenu.show(for: self, event: event, session: session) }
     weak var session: NotesEditorSession?
@@ -186,7 +186,7 @@ struct RichNoteTextView: NSViewRepresentable {
         view.textContainer?.widthTracksTextView = true
         view.isVerticallyResizable = true; view.isHorizontallyResizable = false
         view.autoresizingMask = [.width]
-        view.setAccessibilityLabel(block.kind == .checklist ? "待办内容" : "便笺正文")
+        view.setAccessibilityLabel(block.kind == .checklist ? "待办内容" : "闪念正文")
         view.registerForDraggedTypes([.fileURL, .tiff, .png])
         view.publish = { [weak coordinator = context.coordinator] in coordinator?.publish() }
         context.coordinator.textView = view
@@ -313,15 +313,19 @@ struct RichNoteTextView: NSViewRepresentable {
 /// A plain native field with the same document undo history as the body.
 struct NotesTitleTextField: NSViewRepresentable {
     @ObservedObject var session: NotesEditorSession
+    var scale: CGFloat = 1
+    var compact = false
+    private var titleSize: CGFloat { (compact ? 22 : 24) * scale }
     func makeCoordinator() -> Coordinator { Coordinator(session) }
     func makeNSView(context: Context) -> NSTextField {
         let field = NSTextField()
         field.isBordered = false; field.drawsBackground = false; field.isEditable = true
-        field.font = NSFont.systemFont(ofSize: 34, weight: .semibold)
-        field.textColor = NSColor(NotesTheme.text); field.placeholderString = "未命名便笺"
-        field.lineBreakMode = .byTruncatingTail; field.usesSingleLineMode = true
+        field.font = NSFont.systemFont(ofSize: titleSize, weight: .semibold)
+        field.textColor = NSColor(NotesTheme.text); field.placeholderString = "未命名闪念"
+        field.lineBreakMode = .byWordWrapping; field.usesSingleLineMode = false
+        field.cell?.wraps = true; field.cell?.isScrollable = false
         field.focusRingType = .none; field.delegate = context.coordinator
-        field.setAccessibilityLabel("便笺标题")
+        field.setAccessibilityLabel("闪念标题")
         field.stringValue = session.note.title
         session.titleField = field
         return field
@@ -335,7 +339,14 @@ struct NotesTitleTextField: NSViewRepresentable {
                 editor.setSelectedRange(NSRange(location: min(selection.location, field.stringValue.utf16.count), length: 0))
             }
         }
+        field.font = NSFont.systemFont(ofSize: titleSize, weight: .semibold)
         field.textColor = NSColor(NotesTheme.text)
+        field.invalidateIntrinsicContentSize()
+    }
+    func sizeThatFits(_ proposal: ProposedViewSize,nsView: NSTextField,context: Context) -> CGSize? {
+        let width = max(100,proposal.width ?? 500)
+        let height = nsView.cell?.cellSize(forBounds:NSRect(x:0,y:0,width:width,height:10000)).height ?? titleSize * 1.45
+        return CGSize(width:width,height:max(titleSize * 1.45,ceil(height)))
     }
     @MainActor final class Coordinator: NSObject, NSTextFieldDelegate {
         let session: NotesEditorSession
@@ -348,6 +359,12 @@ struct NotesTitleTextField: NSViewRepresentable {
             guard let field = notification.object as? NSTextField else { return }
             if let editor = field.currentEditor() as? NSTextView, editor.hasMarkedText() { return }
             session.changeTitle(field.stringValue)
+        }
+        func control(_ control: NSControl,textView: NSTextView,doCommandBy selector: Selector) -> Bool {
+            if selector == #selector(NSResponder.insertNewline(_:)), !textView.hasMarkedText(), let body = session.textView {
+                control.window?.makeFirstResponder(body); return true
+            }
+            return false
         }
         func controlTextDidEndEditing(_ notification: Notification) {
             guard let field = notification.object as? NSTextField else { return }

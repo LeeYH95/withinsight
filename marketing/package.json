@@ -1,0 +1,6 @@
+{
+  "name": "shipian-launch-materials",
+  "private": true,
+  "scripts": { "visuals": "node source/render-visuals.cjs" },
+  "devDependencies": { "playwright": "1.62.1" }
+}

@@ -13,8 +13,8 @@ final class LineControlTests: XCTestCase {
         host.frame = NSRect(x: 0, y: 0, width: 40, height: LineControl.hangingHeight)
         host.layoutSubtreeIfNeeded()
         let button = try XCTUnwrap(buttons(in: host).first)
-        XCTAssertEqual(button.accessibilityLabel(), "全部便笺")
-        XCTAssertEqual(button.accessibilityHelp(), "全部便笺")
+        XCTAssertEqual(button.accessibilityLabel(), "全部闪念")
+        XCTAssertEqual(button.accessibilityHelp(), "全部闪念")
         XCTAssertNil(button.toolTip, "Use the immediate custom tooltip rather than the system tooltip")
         XCTAssertEqual(button.frame.size, LineControl.targetSize)
         XCTAssertTrue(button.hitTest(NSPoint(x: button.bounds.midX, y: button.bounds.midY)) === button,
@@ -29,7 +29,8 @@ final class LineControlTests: XCTestCase {
         var created: [String] = []
         line.onNewNote = { created.append($0) }
         let menu = LineControl.templateMenu(for: line)
-        XCTAssertEqual(menu.items.map(\.title), ["文字便笺", "待办清单", "图文便笺"])
+        XCTAssertEqual(menu.items.map(\.title), ["文字闪念", "待办清单", "图文闪念"])
+        XCTAssertTrue(menu.items.allSatisfy { $0.image != nil }, "Each template must fill the menu's icon column")
         for item in menu.items { NotesMenuPresenter.dispatch(item) }
         XCTAssertEqual(created, ["text", "checklist", "image"])
     }

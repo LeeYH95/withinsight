@@ -1,6 +1,7 @@
 import AppKit
 import QuartzCore
 import SwiftUI
+import NotesCore
 
 enum NotesMenuAlignment { case leading, trailing }
 
@@ -96,6 +97,12 @@ private final class NotesPopupPanel: NSPanel {
     private var lastTyped = Date.distantPast
     var isPresented: Bool { panel != nil }
 
+    /// A popup can be anchored to the rope or status bar while an unrelated
+    /// notes window remains main. Resolve ownership from the actual anchor.
+    func sourceWindow(for popup: NSWindow) -> NSWindow? {
+        popup === panel ? originWindow : nil
+    }
+
     func toggle(_ menu: NSMenu, from view: NSView, alignment: NotesMenuAlignment = .leading) {
         if panel != nil, anchorView === view { dismiss(); return }
         show(menu, from: view, alignment: alignment, togglesFromAnchor: true)
@@ -117,7 +124,7 @@ private final class NotesPopupPanel: NSPanel {
         let local = point.map { NSRect(origin: $0, size: .zero) } ?? view.bounds
         anchorRect = window.convertToScreen(view.convert(local, to: nil))
         let popup = NotesPopupPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
-        popup.title = menu.title.isEmpty ? "便笺操作菜单" : menu.title
+        popup.title = menu.title.isEmpty ? "闪念操作菜单" : menu.title
         popup.backgroundColor = .clear; popup.isOpaque = false; popup.hasShadow = true
         popup.isReleasedWhenClosed = false
         popup.level = .popUpMenu; popup.hidesOnDeactivate = false
@@ -146,14 +153,16 @@ private final class NotesPopupPanel: NSPanel {
     private func layout(animated: Bool) {
         guard let panel, let navigator else { return }
         let screen = NSScreen.screens.first { $0.frame.contains(NSPoint(x: anchorRect.midX, y: anchorRect.midY)) } ?? originWindow?.screen ?? NSScreen.main
-        let visible = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
+        let screenFrame = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
+        let windowFrame = originWindow?.frame.intersection(screenFrame) ?? screenFrame
+        let visible = windowFrame.isEmpty ? screenFrame : windowFrame
         if navigator.menu is NotesPaperMenu {
-            var frame = NotesMenuGeometry.frame(anchor: anchorRect, size: NSSize(width: 234, height: 190), visible: visible, alignment: alignment)
+            var frame = NotesMenuGeometry.frame(anchor: anchorRect, size: NSSize(width: 260, height: min(212,visible.height - 16)), visible: visible, alignment: alignment)
             if anchorRect.maxY + 8 + frame.height <= visible.maxY - 8 { frame.origin.y = anchorRect.maxY + 8 }
             panel.setFrame(frame, display: true)
             return
         }
-        let longest = navigator.items.map { ($0.title as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 13)]).width }.max() ?? 150
+        let longest = navigator.items.map { (($0.title + ($0.notesDetail.isEmpty ? "" : "  " + $0.notesDetail)) as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 13)]).width }.max() ?? 150
         let width = min(390, max(248, longest + 90))
         let rows = navigator.items.reduce(CGFloat(0)) { $0 + ($1.isSeparatorItem ? 13 : 36) }
         let header: CGFloat = navigator.depth > 0 || !navigator.title.isEmpty ? 39 : 0
@@ -329,7 +338,7 @@ private struct NotesMenuSurface: View {
             .background(NotesTheme.shell, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             .overlay { RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(NotesTheme.border.opacity(0.85), lineWidth: 1) }
             .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .accessibilityElement(children: .contain).accessibilityLabel("便笺操作菜单")
+            .accessibilityElement(children: .contain).accessibilityLabel("闪念操作菜单")
     }
     private func row(_ item: NSMenuItem, at index: Int) -> some View {
         let selected = navigator.selected == index && NotesMenuNavigator.available(item)
@@ -340,8 +349,14 @@ private struct NotesMenuSurface: View {
                     if item.state != .off { Image(systemName: item.state == .mixed ? "minus" : "checkmark").font(.system(size: 12, weight: .semibold)) }
                     else if let image = item.image { Image(nsImage: image).resizable().scaledToFit().frame(width: 15, height: 15) }
                 }.frame(width: 18)
+                if let paper = item.notesPaperSwatch {
+                    Circle().fill(NotesTheme.editorSwatch(paper))
+                        .overlay(Circle().stroke(NotesTheme.border, lineWidth: 1))
+                        .frame(width: 17, height: 17).accessibilityHidden(true)
+                }
                 Text(item.title).lineLimit(1).truncationMode(.middle)
                 Spacer(minLength: 10)
+                if !item.notesDetail.isEmpty { Text(item.notesDetail).font(.system(size: 11)).foregroundStyle(NotesTheme.muted) }
                 if item.submenu != nil { Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold)) }
                 else if !item.keyEquivalent.isEmpty { Text(shortcut(item)).font(.system(size: 11)).foregroundStyle(NotesTheme.muted) }
             }.font(.system(size: 13, weight: selected ? .medium : .regular))
@@ -364,19 +379,21 @@ private struct NotesMenuSurface: View {
 
 struct NotesMenuButton<Label: View>: View {
     let name: String
+    let tooltip: String?
     var alignment: NotesMenuAlignment
     var menu: () -> NSMenu
     @ViewBuilder var label: () -> Label
     @State private var anchor: NSView?
-    init(_ name: String, alignment: NotesMenuAlignment = .leading,
+    init(_ name: String, tooltip: String? = nil, alignment: NotesMenuAlignment = .leading,
          menu: @escaping () -> NSMenu, @ViewBuilder label: @escaping () -> Label) {
-        self.name = name; self.alignment = alignment; self.menu = menu; self.label = label
+        self.name = name; self.tooltip = tooltip; self.alignment = alignment; self.menu = menu; self.label = label
     }
     var body: some View {
         Button {
             if let anchor { NotesMenuPresenter.shared.toggle(menu(), from: anchor, alignment: alignment) }
         } label: { label() }
-            .buttonStyle(NotesPressStyle()).accessibilityLabel(name).notesTooltip(name)
+            .buttonStyle(NotesPressStyle()).accessibilityLabel(name)
+            .background { if let tooltip { NotesTooltipAnchor(text: tooltip) } }
             .background(NotesMenuAnchor { anchor = $0 })
     }
 }
@@ -450,12 +467,20 @@ extension NSMenuItem {
         image = NSImage(systemSymbolName: name, accessibilityDescription: nil)
         return self
     }
+    var notesDetail: String {
+        get { (representedObject as? NotesMenuMetadata)?.detail ?? "" }
+        set { representedObject = NotesMenuMetadata(destructive: notesDestructive, detail: newValue, paper: notesPaperSwatch) }
+    }
     var notesDestructive: Bool {
         get { (representedObject as? NotesMenuMetadata)?.destructive == true }
-        set { representedObject = NotesMenuMetadata(destructive: newValue) }
+        set { representedObject = NotesMenuMetadata(destructive: newValue, detail: notesDetail, paper: notesPaperSwatch) }
+    }
+    var notesPaperSwatch: NotePaper? {
+        get { (representedObject as? NotesMenuMetadata)?.paper }
+        set { representedObject = NotesMenuMetadata(destructive: notesDestructive, detail: notesDetail, paper: newValue) }
     }
 }
-private struct NotesMenuMetadata { let destructive: Bool }
+private struct NotesMenuMetadata { let destructive: Bool; var detail: String = ""; var paper: NotePaper? = nil }
 
 final class ClosureMenuItem: NSMenuItem {
     private let handler: () -> Void

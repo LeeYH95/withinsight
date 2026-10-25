@@ -18,10 +18,10 @@ struct LineControl: View {
     static var hangingHeight: CGFloat { clipHeight + overlap + targetSize.height }
 
     static func templateMenu(for line: Line) -> NSMenu {
-        let menu = NSMenu(title: "新建便笺")
-        menu.addItem(ClosureMenuItem("文字便笺") { line.onNewNote?("text") })
-        menu.addItem(ClosureMenuItem("待办清单") { line.onNewNote?("checklist") })
-        menu.addItem(ClosureMenuItem("图文便笺") { line.onNewNote?("image") })
+        let menu = NSMenu(title: "新建闪念")
+        menu.addItem(ClosureMenuItem("文字闪念") { line.onNewNote?("text") }.notesSymbol("doc.text"))
+        menu.addItem(ClosureMenuItem("待办清单") { line.onNewNote?("checklist") }.notesSymbol("checklist"))
+        menu.addItem(ClosureMenuItem("图文闪念") { line.onNewNote?("image") }.notesSymbol("photo"))
         return menu
     }
 
@@ -60,7 +60,7 @@ private struct NativePaperButton: NSViewRepresentable {
 
     func makeNSView(context: Context) -> LinePaperButton { LinePaperButton(frame: .zero) }
     func updateNSView(_ button: LinePaperButton, context: Context) {
-        let label = isNew ? "新建便笺" : "全部便笺"
+        let label = isNew ? "新建闪念" : "全部闪念"
         button.isNew = isNew
         button.setAccessibilityLabel(label)
         button.setAccessibilityHelp(label)
@@ -127,7 +127,7 @@ private final class LinePaperButton: NSButton {
     }
     override func mouseEntered(with event: NSEvent) {
         hovered = true; updateArtwork()
-        NotesTooltipPresenter.shared.show(isNew ? "新建便笺" : "全部便笺", from: self)
+        NotesTooltipPresenter.shared.show(isNew ? "新建闪念" : "全部闪念", from: self)
     }
     override func mouseExited(with event: NSEvent) {
         hovered = false; updateArtwork()
@@ -184,7 +184,7 @@ private struct LinePaperFace: View {
             sheet.fill(LinearGradient(colors: [front, front.opacity(0.94)], startPoint: .topLeading, endPoint: .bottomTrailing))
                 .overlay(sheet.strokeBorder(NotesTheme.muted.opacity(0.16), lineWidth: 0.5))
                 .overlay(alignment: .top) {
-                    Text(isNew ? "新建" : "便笺")
+                    Text(isNew ? "新建" : "闪念")
                         .font(.system(size: 8, weight: .medium))
                         .foregroundStyle(NotesTheme.muted)
                         .padding(.top, 13)

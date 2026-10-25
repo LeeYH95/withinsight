@@ -53,7 +53,7 @@ public struct NoteDocument: Identifiable, Codable, Equatable, Sendable {
     public var effectiveEditorPaper: NotePaper { editorPaper ?? paper }
     public var displayTitle: String {
         let explicitTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        return explicitTitle.isEmpty ? "未命名便笺" : explicitTitle
+        return explicitTitle.isEmpty ? "未命名闪念" : explicitTitle
     }
     public var plainText: String { blocks.map(\.text).joined(separator: "\n") }
 }

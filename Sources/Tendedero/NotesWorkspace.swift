@@ -5,6 +5,7 @@ import NotesCore
 @MainActor
 final class NotesWorkspace {
     let store: NotesStore
+    var settingsActions = NotesSettingsActions()
     var onHang: ((UUID) -> Void)?
     var onTakeOff: ((UUID) -> Void)?
     var onFocus: ((UUID?) -> Void)?
@@ -16,7 +17,6 @@ final class NotesWorkspace {
     private var settings: NSWindowController?
     private var defaultsObserver: NSObjectProtocol?
     private var screenObserver: NSObjectProtocol?
-    private var quitBackupIDs: Set<UUID> = []
     init(store: NotesStore) {
         self.store = store
         defaultsObserver = NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
@@ -47,7 +47,7 @@ final class NotesWorkspace {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak controller] in
                 guard let controller, controller.window?.isKeyWindow == true else { return }
                 if let first = controller.session.note.blocks.first, first.kind == .checklist { controller.session.focusedBlock = first.id }
-                else if let field = controller.session.titleField { controller.window?.makeFirstResponder(field) }
+                if let body = controller.session.textView { controller.window?.makeFirstResponder(body) }
             }
         }
     }
@@ -60,9 +60,11 @@ final class NotesWorkspace {
     }
     func showLibrary() {
         if library == nil {
-            let window = Self.makeWindow(title: "全部便笺", size: NSSize(width: 1080, height: 720), minimum: NSSize(width: 720, height: 440))
+            let window = Self.makeWindow(title: "全部闪念", size: NSSize(width: 820, height: 560), minimum: NSSize(width: 640, height: 420))
             window.contentView = NSHostingView(rootView: NotesLibraryView(workspace: self, store: store))
-            window.setFrameAutosaveName("NotesLibraryWindow")
+            let frameName = "NotesLibraryWindow-compact-v1"
+            _ = window.setFrameUsingName(frameName)
+            window.setFrameAutosaveName(frameName)
             library = NSWindowController(window: window)
         }
         NSApp.activate(ignoringOtherApps: true)
@@ -70,9 +72,10 @@ final class NotesWorkspace {
         NotificationCenter.default.post(name: .notesFocusSearch, object: nil)
     }
     func showSettings() {
+        NotesTooltipPresenter.shared.dismiss()
         if settings == nil {
-            let window = Self.makeWindow(title: "便笺偏好设置", size: NSSize(width: 650, height: 560), minimum: NSSize(width: 550, height: 470))
-            window.contentView = NSHostingView(rootView: NotesSettingsView())
+            let window = Self.makeWindow(title: "闪念偏好设置", size: NSSize(width: 760, height: 500), minimum: NSSize(width: 650, height: 440))
+            window.contentView = NSHostingView(rootView: NotesSettingsView(actions: settingsActions))
             settings = NSWindowController(window: window)
         }
         NSApp.activate(ignoringOtherApps: true)
@@ -86,6 +89,10 @@ final class NotesWorkspace {
             NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string)
         }
     }
+    func showRecoveryFolder() {
+        let folder = store.directory.appendingPathComponent("recovery", isDirectory: true)
+        perform { try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700]); NSWorkspace.shared.open(folder) }
+    }
     func duplicate(_ id: UUID) {
         perform { try commit(id); let note = try store.duplicate(id); try store.setOnLine(note.id, true); onHang?(note.id); open(note.id) }
     }
@@ -93,7 +100,7 @@ final class NotesWorkspace {
         perform {
             try commit(id)
             guard let note = store.document(id: id) else { return }
-            let panel = NSSavePanel(); panel.title = "导出便笺及附件"; panel.allowedContentTypes = [.init(filenameExtension: "md")!]
+            let panel = NSSavePanel(); panel.title = "导出闪念及附件"; panel.allowedContentTypes = [.init(filenameExtension: "md")!]
             panel.nameFieldStringValue = Self.safeFilename(note.displayTitle) + ".md"
             guard panel.runModal() == .OK, let url = panel.url else { return }
             try store.exportMarkdown(id, to: url)
@@ -102,7 +109,7 @@ final class NotesWorkspace {
     func requestTrash(_ id: UUID) {
         guard let note = store.document(id: id) else { return }
         let alert = NSAlert(); alert.messageText = "将“\(note.displayTitle)”移到最近删除？"
-        alert.informativeText = "正文和附件副本将保留，你可以在全部便笺的最近删除中恢复。原始文件不会被删除。"
+        alert.informativeText = "正文和附件副本将保留，你可以在全部闪念的最近删除中恢复。原始文件不会被删除。"
         alert.addButton(withTitle: "移到最近删除"); alert.addButton(withTitle: "取消")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         perform { try commit(id); try store.trash(id); hideEditor(id); onTakeOff?(id) }
@@ -113,10 +120,28 @@ final class NotesWorkspace {
     func permanentlyDelete(_ id: UUID) {
         guard let note = store.document(id: id), note.deletedAt != nil else { return }
         let alert = NSAlert(); alert.alertStyle = .warning
-        alert.messageText = "永久删除“\(note.displayTitle)”？"; alert.informativeText = "此操作无法撤销。便笺及应用内的附件副本会被永久删除，原始文件不受影响。"
+        alert.messageText = "永久删除“\(note.displayTitle)”？"; alert.informativeText = "此操作无法撤销。闪念及应用内的附件副本会被永久删除，原始文件不受影响。"
         alert.addButton(withTitle: "永久删除"); alert.addButton(withTitle: "取消")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         perform { try store.permanentlyDelete(id); hideEditor(id); editors.removeValue(forKey: id) }
+    }
+    func requestEmptyTrash(query: String, completion: @escaping (Int) -> Void) {
+        guard let window = library?.window, window.attachedSheet == nil else { return }
+        let request = NotesEmptyTrashConfirmation(documents: store.documents, query: query)
+        guard !request.ids.isEmpty else { return }
+        NotesTooltipPresenter.shared.dismiss()
+        let alert = request.makeAlert()
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard response == .alertFirstButtonReturn, let self else { return }
+            self.perform {
+                let removed = try self.store.emptyTrash(request.ids)
+                for id in removed {
+                    self.hideEditor(id)
+                    self.editors.removeValue(forKey: id)
+                }
+                completion(removed.count)
+            }
+        }
     }
     @discardableResult func takeOff(_ id: UUID) -> Bool {
         do { try commit(id); try store.setOnLine(id, false); editors[id]?.session.reload(); hideEditor(id); onTakeOff?(id); return true }
@@ -137,11 +162,12 @@ final class NotesWorkspace {
         onFocus?(editors.first(where: { $0.key != id && $0.value.window?.isKeyWindow == true && $0.value.window?.isVisible == true })?.key)
     }
     func prepareToQuit() -> Bool {
-        quitBackupIDs = []
         for controller in editors.values { if !resolvePending(controller.session, quitting: true) { return false } }
-        do { try store.flush(); return true }
+        do {
+            if store.hasPendingChanges { try store.flush() }
+            return true
+        }
         catch {
-            if !quitBackupIDs.isEmpty { return true }
             showError(error); return false
         }
     }
@@ -151,43 +177,13 @@ final class NotesWorkspace {
             session.window?.makeKeyAndOrderFront(nil)
             let alert = NSAlert(); alert.alertStyle = .warning
             alert.messageText = "“\(session.note.displayTitle)”尚未保存"
-            alert.informativeText = error.localizedDescription + "\n内容仍保留在此窗口。请重试，或先导出完整副本。"
-            alert.addButton(withTitle: "重试"); alert.addButton(withTitle: "导出副本"); alert.addButton(withTitle: quitting ? "取消退出" : "继续编辑")
+            alert.informativeText = error.localizedDescription + "\n内容仍保留在此窗口。请重试保存。"
+            alert.addButton(withTitle: "重试"); alert.addButton(withTitle: quitting ? "取消退出" : "继续编辑")
             switch alert.runModal() {
             case .alertFirstButtonReturn: return resolvePending(session, quitting: quitting)
-            case .alertSecondButtonReturn:
-                if exportMemoryBackup(session) { if quitting { quitBackupIDs.insert(session.note.id) }; return true }
-                return false
             default: return false
             }
         }
-    }
-    private func exportMemoryBackup(_ session: NotesEditorSession) -> Bool {
-        let panel = NSSavePanel(); panel.title = "导出尚未保存的副本"; panel.nameFieldStringValue = Self.safeFilename(session.note.displayTitle) + "-备份.md"
-        guard panel.runModal() == .OK, let destination = panel.url else { return false }
-        do {
-            let root = destination.standardizedFileURL.resolvingSymlinksInPath().path
-            guard !root.hasPrefix(store.directory.path + "/") else { throw NotesStoreError.unsafePath }
-            let folderName = destination.deletingPathExtension().lastPathComponent + "-附件-" + UUID().uuidString
-            let folder = destination.deletingLastPathComponent().appendingPathComponent(folderName, isDirectory: true)
-            var links: [UUID: String] = [:]
-            if !session.note.attachments.isEmpty { try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false) }
-            for attachment in session.note.attachments {
-                let source = try session.localURL(for: attachment)
-                let name = attachment.id.uuidString + "." + source.pathExtension
-                try FileManager.default.copyItem(at: source, to: folder.appendingPathComponent(name))
-                links[attachment.id] = (folderName + "/" + name).addingPercentEncoding(withAllowedCharacters: .urlPathAllowed)
-            }
-            let body = session.note.blocks.map { block -> String in
-                switch block.kind {
-                case .paragraph: return block.markdown ?? block.text
-                case .checklist: return "- [\(block.isChecked ? "x" : " ")] " + block.text
-                case .image, .file: return "\(block.kind == .image ? "!" : "")[\(block.text)](\(block.attachmentID.flatMap { links[$0] } ?? ""))"
-                }
-            }.joined(separator: "\n\n")
-            try Data(("# " + session.note.displayTitle + "\n\n" + body).utf8).write(to: destination, options: .atomic)
-            return true
-        } catch { showError(error); return false }
     }
     func thumbnail(for note: NoteDocument) -> NSImage { NoteThumbnail.image(for: note) }
     func commit(_ id: UUID) throws { try editors[id]?.session.commit() }
@@ -225,12 +221,30 @@ private extension NSRect { var area: CGFloat { isNull ? 0 : width * height } }
 
 final class NotesWindow: NSWindow {
     override func sendEvent(_ event: NSEvent) {
+        if event.type == .leftMouseDown, !event.modifierFlags.contains(.control), let contentView {
+            var candidate = contentView.hitTest(contentView.convert(event.locationInWindow, from: nil))
+            while let view = candidate {
+                if let body = view as? NotesContinuousTextView {
+                    // SwiftUI's expanded empty paper can hit the text view while
+                    // AppKit keeps the title field editor. Focus before routing
+                    // the click; native caret placement and dragging still run.
+                    if firstResponder !== body { makeFirstResponder(body) }
+                    break
+                }
+                candidate = view.superview
+            }
+        }
         let contextClick = event.type == .rightMouseDown || (event.type == .leftMouseDown && event.modifierFlags.contains(.control))
         if contextClick, let contentView {
             var candidate = contentView.hitTest(contentView.convert(event.locationInWindow, from: nil))
             while let view = candidate {
                 if let text = view as? NSTextView {
-                    NotesTextMenu.show(for: text, event: event, session: NotesTextMenu.session(for: text)); return
+                    if let notesText = text as? NotesTextView {
+                        notesText.rightMouseDown(with: event)
+                    } else {
+                        NotesTextMenu.show(for: text, event: event, session: NotesTextMenu.session(for: text))
+                    }
+                    return
                 }
                 if let field = view as? NSTextField, field.isEditable, field.isEnabled {
                     makeFirstResponder(field)
@@ -282,7 +296,7 @@ final class NotesEditorController: NSWindowController, NSWindowDelegate {
     }()
     init(note: NoteDocument, workspace: NotesWorkspace) {
         session = NotesEditorSession(note: note, store: workspace.store); self.workspace = workspace
-        let window = NotesWorkspace.makeWindow(title: note.displayTitle, size: NSSize(width: 920, height: 650), minimum: NSSize(width: 650, height: 390))
+        let window = NotesWorkspace.makeWindow(title: note.displayTitle, size: NSSize(width: 880, height: 650), minimum: NSSize(width: 420, height: 360))
         super.init(window: window)
         window.delegate = self; window.level = note.pinned ? .floating : .normal
         _ = window.setFrameUsingName("NotesEditor-" + note.id.uuidString)
@@ -318,6 +332,28 @@ struct NotesWindowDragRegion: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView { NotesDragView() }
     func updateNSView(_ nsView: NSView, context: Context) {}
     private final class NotesDragView: NSView {
-        override func mouseDown(with event: NSEvent) { window?.performDrag(with: event) }
+        private var start: (frame: NSRect, pointer: NSPoint)?
+        // The first press on an inactive window must both activate and drag.
+        // Track ordinary AppKit drag events rather than handing the gesture
+        // back to performDrag, which can return without moving borderless hosts.
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+        override var mouseDownCanMoveWindow: Bool { false }
+        override func mouseDown(with event: NSEvent) {
+            start = nil
+            guard let window, window.isMovable, window.attachedSheet == nil,
+                  !event.modifierFlags.contains(.control) else { return }
+            NotesTooltipPresenter.shared.dismiss()
+            start = (window.frame, window.convertPoint(toScreen: event.locationInWindow))
+        }
+        override func mouseDragged(with event: NSEvent) {
+            guard let window, let start, window.attachedSheet == nil else { return }
+            let pointer = window.convertPoint(toScreen: event.locationInWindow)
+            let dx = pointer.x - start.pointer.x, dy = pointer.y - start.pointer.y
+            guard hypot(dx, dy) >= 3 else { return }
+            NotesMenuPresenter.shared.dismiss()
+            let requested = start.frame.offsetBy(dx: dx, dy: dy)
+            window.setFrameOrigin(NotesWorkspace.clampedFrame(requested, for: window).origin)
+        }
+        override func mouseUp(with event: NSEvent) { start = nil }
     }
 }
