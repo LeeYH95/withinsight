@@ -12,7 +12,9 @@ jobs:
           CLANG_MODULE_CACHE_PATH: ${{ github.workspace }}/.build/ModuleCache
           SWIFTPM_MODULECACHE_OVERRIDE: ${{ github.workspace }}/.build/ModuleCache
         run: swift test --disable-sandbox
-      - name: Launch checker tests
-        run: python3 -m unittest discover -s skills/github-product-launch/tests
+      - name: Load standalone launch checker
+        run: |
+          git clone --quiet https://github.com/LeeYH95/github-product-launch.git "$RUNNER_TEMP/github-product-launch"
+          git -C "$RUNNER_TEMP/github-product-launch" checkout --quiet 59f94604ebd7fce36e9bc1762d4b7bdd0ca55cdc
       - name: Launch materials
-        run: python3 skills/github-product-launch/scripts/check_launch.py --root .
+        run: python3 "$RUNNER_TEMP/github-product-launch/scripts/check_launch.py" --root .

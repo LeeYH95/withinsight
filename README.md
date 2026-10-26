@@ -110,9 +110,9 @@ Tests/NativeNotesUIHarness/run.sh
 
 使用 [Bug 报告](../../issues/new?template=bug_report.yml) 提交系统版本、应用版本、复现步骤与预期行为；截图前请遮挡个人信息。提出功能想法请说明实际场景。欢迎提交聚焦的 Pull Request；涉及数据保存、附件和删除行为的改动需要测试。
 
-## 配套发布 Skill
+## 相关发布工具
 
-仓库附带 [github-product-launch](skills/github-product-launch/README.md)，用于给其他项目制作 README、Banner、功能说明、介绍视频和发布检查报告。它会先核对真实功能与素材来源，准备完成后按用户已授权的范围发布。
+[github-product-launch](https://github.com/LeeYH95/github-product-launch) 已作为独立 Skill 维护，可用于给软件项目制作 README、Banner、功能说明、介绍视频和发布检查报告。安装与使用方法见独立仓库。
 
 ## 来源与许可
 
