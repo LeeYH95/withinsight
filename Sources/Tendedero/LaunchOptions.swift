@@ -5,8 +5,13 @@ enum LaunchOptions {
     static var version: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.4.0" }
     static let testBuild = Bundle.main.bundleIdentifier == "local.linenotes.test"
     static let demo = ProcessInfo.processInfo.arguments.contains("--demo")
+    #if DEBUG
+    static let demoRope = demo && ProcessInfo.processInfo.arguments.contains("--demo-rope")
+    #else
+    static let demoRope = false
+    #endif
     static let lineDefaults: UserDefaults = demo
-        ? UserDefaults(suiteName: testBuild ? "local.linenotes.test.demo.line" : "local.linenotes.dev.demo.line")!
+        ? UserDefaults(suiteName: (Bundle.main.bundleIdentifier ?? "local.linenotes.dev") + ".demo.line")!
         : .standard
     static var directory: URL {
         let args = ProcessInfo.processInfo.arguments

@@ -3,13 +3,13 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 # Keep the established bundle ID so existing notes remain available.
 LINENOTES_APP_NAME="拾片" LINENOTES_BUNDLE_ID="local.linenotes.test" \
-LINENOTES_VERSION="0.5.14" LINENOTES_BUILD="22" LINENOTES_BRAND_ICONS=1 scripts/build-dev-app.sh release
+LINENOTES_VERSION="0.5.15" LINENOTES_BUILD="23" LINENOTES_BRAND_ICONS=1 scripts/build-dev-app.sh release
 notes_output="build/shipian-release"
 mkdir -p "$notes_output"
 ditto 'build/拾片.app' "$notes_output/拾片.app"
 rm -f "$notes_output/拾片.app/Contents/Resources/ShipianDark.icns" "$notes_output/拾片.app/Contents/Resources/ShipianSystemIconLight.png" "$notes_output/拾片.app/Contents/Resources/ShipianSystemIconDark.png"
 cat > "$notes_output/请先阅读.txt" <<'TEXT'
-拾片 0.5.14 (22) · Apple Silicon · macOS 14+
+拾片 0.5.15 (23) · Apple Silicon · macOS 14+
 
 双击 拾片.app 即可使用，也可拖到“应用程序”。
 使用原 LineNotes Test 的独立应用身份，已有闪念会继续显示。
@@ -32,6 +32,8 @@ cat > "$notes_output/请先阅读.txt" <<'TEXT'
 闪念库默认 820×560，可手动缩放，顶部与筛选栏空白可拖动，按钮和搜索框保留原操作。
 挂绳不会盖住当前拾片窗口及其确认框，切换应用时保留原有悬浮行为。
 挂绳新建菜单补齐类型图标；菜单打开时保持挂绳可见，收起挂绳时同步关闭所属菜单。
+绳尾新增带 × 的小图片入口，悬停可查看说明；点击后短银杆从左向右取下所有截图。
+批量取下保留闪念、录像和原文件（含自有截图文件夹），完成后可撤销；启用减少动态效果时直接完成。
 不要同时运行旧 LineNotes Test 和拾片；退出旧版本后再打开拾片。
 原版 Tendedero 和 LineNotes Dev 不会被覆盖。
 
@@ -57,14 +59,14 @@ if [[ "${SHIPIAN_APP_ONLY:-0}" == "1" ]]; then
     echo "Built $notes_output (App only)"
     exit 0
 fi
-ditto -c -k --sequesterRsrc --keepParent "$notes_output/拾片.app" "$notes_output/Shipian-0.5.14-arm64.zip"
+ditto -c -k --sequesterRsrc --keepParent "$notes_output/拾片.app" "$notes_output/Shipian-0.5.15-arm64.zip"
 notes_stage="$(mktemp -d "$PWD/build/shipian-dmg-stage.XXXXXX")"
 trap 'rm -rf "$notes_stage"' EXIT
 ditto "$notes_output/拾片.app" "$notes_stage/拾片.app"
 cp "$notes_output/请先阅读.txt" "$notes_stage/请先阅读.txt"
 ln -s /Applications "$notes_stage/Applications"
-hdiutil create -quiet -srcfolder "$notes_stage" -volname '拾片' -format UDZO -ov "$notes_output/Shipian-0.5.14-arm64.dmg"
-(cd "$notes_output" && shasum -a 256 Shipian-0.5.14-arm64.zip Shipian-0.5.14-arm64.dmg) > "$notes_output/SHA256SUMS.txt"
+hdiutil create -quiet -srcfolder "$notes_stage" -volname '拾片' -format UDZO -ov "$notes_output/Shipian-0.5.15-arm64.dmg"
+(cd "$notes_output" && shasum -a 256 Shipian-0.5.15-arm64.zip Shipian-0.5.15-arm64.dmg) > "$notes_output/SHA256SUMS.txt"
 # The signed distributable is canonical. Do not leave a second Launchpad-visible build copy.
 rm -rf 'build/拾片.app'
 echo "Built $notes_output"

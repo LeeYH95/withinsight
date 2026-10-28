@@ -127,6 +127,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self?.line.scroll(by: event.hasPreciseScrollingDeltas ? delta : delta * 12)
         }
         line.onFall = { [weak self] item in self?.fall(item) }
+        line.onClearScreenshots = { [weak self] batch in self?.startScreenshotClear(batch) }
 
         line.$items
             .receive(on: RunLoop.main)
@@ -164,6 +165,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             reveal(pinned: true)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
                 guard let self else { return }
+                if LaunchOptions.demoRope {
+                    self.loadingWindow?.orderOut(nil); self.loadingWindow = nil
+                    return
+                }
                 if LaunchOptions.demo, let first = self.notes.documents.first(where: { $0.title == "把灵感留下来" && $0.deletedAt == nil }) ?? self.notes.documents.first(where: { $0.deletedAt == nil }) {
                     LaunchTrace.mark("editor-start")
                     self.workspace.open(first.id)
@@ -178,11 +183,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if LaunchOptions.demoRope {
+            keepOpen = true; wanted = true; refresh(); reveal(pinned: true)
+            return true
+        }
         if workspace != nil, !workspace.hasVisibleEditor { workspace.showLibrary() }
         return true
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        line.screenshotSweep.complete()
         if !LaunchOptions.demo && Inbox.isEnabled { Inbox.restore() }
     }
 
@@ -301,9 +311,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// An empty line goes away, unless it was opened on purpose.
     private func itemsChanged() {
-        guard line.liveCount == 0, !keepOpen else { return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { [weak self] in
-            guard let self, self.line.liveCount == 0, !self.keepOpen else { return }
+        guard line.liveCount == 0, !keepOpen, line.screenshotClear == nil else { return }
+        let delay = max(0.7, peekUntil.timeIntervalSinceNow)
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self, self.line.liveCount == 0, !self.keepOpen, self.line.screenshotClear == nil else { return }
+            guard Date() >= self.peekUntil else { self.itemsChanged(); return }
             self.wanted = false
             self.refresh()
         }
@@ -312,6 +324,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// The line comes down on that screen for a moment, then tucks away.
     /// Without a screen, it uses the one under the pointer.
     private func comeDown(on screen: NSScreen?) {
+        if line.screenshotClear != nil, panel.screen != (screen ?? LinePanel.screenUnderPointer()) {
+            line.screenshotSweep.complete()
+        }
         panel.placeOnScreen(screen)
         updateCapacity()
         wanted = true
@@ -347,7 +362,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func fly(_ id: UUID, from: CGRect) {
         guard isPresent, isRevealed, CaptureFlight.flightsInProgress < 2, let screen = panel.screen,
               let to = cardFrame(for: id),
-              let item = line.items.first(where: { $0.id == id }) else {
+              let item = line.items.first(where: { $0.id == id && $0.flying && !$0.falling }) else {
             line.land(id)
             return
         }
@@ -359,7 +374,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             line.land(id)
             return
         }
-        CaptureFlight.fly(image: image, from: from, to: to, tilt: CGFloat(item.tilt), on: screen) { [weak self] in
+        CaptureFlight.fly(image: image, from: from, to: to, tilt: CGFloat(item.tilt), on: screen, id: id) { [weak self] in
             self?.line.land(id)
         }
     }
@@ -372,13 +387,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         CaptureFlight.fall(image: image, card: card, tilt: CGFloat(item.tilt), on: screen)
     }
 
+    private func startScreenshotClear(_ batch: ScreenshotClearBatch) {
+        guard isPresent, isRevealed else { line.finishScreenshotClear(batch.id); return }
+        CaptureFlight.settle(batch.targetIDs)
+        // Also land captures whose delayed flight has not started yet.
+        for item in batch.targets where item.flying { line.land(item.id) }
+        let width = panel.frame.width
+        let contentWidth = max(300, width - Layout.controlsWidth)
+        let targets = batch.targets.compactMap { item -> ScreenshotSweepPlan.Target? in
+            let x = line.hangingX(for: item.id, width: width)
+            guard x > 12, x < contentWidth - 12 else { return nil }
+            return .init(id: item.id, x: x)
+        }
+        awaySince = nil
+        line.screenshotSweep.start(.init(width: width, targets: targets), reduced: HangingMotion.reduced,
+            onContact: { [weak self] id in self?.line.releaseScreenshot(id, in: batch.id) },
+            onFinish: { [weak self] in
+                guard let self else { return }
+                self.line.finishScreenshotClear(batch.id)
+                if self.isPresent, self.isRevealed { self.reveal(peekFor: 6) }
+            })
+    }
+
     /// Where a card will hang, in screen coordinates, using the same layout
     /// as the line view.
     private func cardFrame(for id: UUID) -> CGRect? {
         guard let index = line.items.firstIndex(where: { $0.id == id }) else { return nil }
         let width = panel.frame.width
-        let x = Layout.x(index: index, count: line.items.count, width: max(300, width - Layout.controlsWidth),
-                         visible: line.visibleCount, scroll: line.scroll)
+        let x = line.hangingX(for: id, width: width)
         let viewTop = Layout.ropeY(x: x, width: width) - Layout.pinAbove
         let cardTop = viewTop + PeggedView.cardOffsetBelowTop
         let size = PeggedView.cardSize(for: line.items[index].thumb.size)
@@ -430,7 +466,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func setRevealed(_ on: Bool) {
         guard on != isRevealed else { return }
-        if !on { NotesMenuPresenter.shared.dismiss(ifAnchoredTo: panel) }
+        if !on {
+            line.screenshotSweep.complete()
+            NotesMenuPresenter.shared.dismiss(ifAnchoredTo: panel)
+        }
         isRevealed = on
         line.revealed = on
         // It always comes down showing the newest.
@@ -564,8 +603,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let inside = NSMouseInRect(mouse, zone, false)
         if inside && pinned { pinned = false }
 
-        let busy = pinned || GrabView.isDragging || GrabView.isShowingMenu || NotesMenuPresenter.shared.isPresented
-            || line.pressedID != nil || now < peekUntil
+        let busy = LaunchOptions.demoRope || pinned || GrabView.isDragging || GrabView.isShowingMenu || NotesMenuPresenter.shared.isPresented
+            || line.pressedID != nil || line.screenshotClear != nil || now < peekUntil
         if inside || busy {
             awaySince = nil
         } else {
@@ -585,13 +624,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard !GrabView.isDragging else { return }
         let local = panel.convertPoint(fromScreen: mouse)
         let flipped = CGPoint(x: local.x, y: panel.frame.height - local.y)
-        var overPhoto = line.hitRects.values.contains { $0.insetBy(dx: -4, dy: -4).contains(flipped) }
-        // A line longer than the screen also takes the band the photos hang
-        // in, gaps included, so a swipe anywhere along it moves it.
-        if !overPhoto, line.items.count > line.visibleCount {
-            let band = line.hitRects.values.reduce(CGRect.null) { $0.union($1) }
-            overPhoto = !band.isNull && flipped.y >= band.minY - 4 && flipped.y <= band.maxY + 4
-        }
+        let overPhoto = line.acceptsPointer(at: flipped)
         if panel.ignoresMouseEvents == overPhoto {
             panel.ignoresMouseEvents = !overPhoto
         }
@@ -638,6 +671,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func setSize(_ size: Layout.Size) {
         guard size != Layout.size else { return }
+        line.screenshotSweep.complete()
         Layout.size = size
         panel.placeOnScreen(panel.screen)
         updateCapacity()
@@ -645,7 +679,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func updateCapacity() {
-        let usable = panel.frame.width - 200
+        if let width = line.screenshotSweep.width, width != panel.frame.width { line.screenshotSweep.complete() }
+        let usable = panel.frame.width - (96 + Layout.controlsWidth)
         let fits = max(3, min(12, Int(usable / Layout.spacing)))
         line.visibleCount = fits
         line.maxItems = max(fits, Line.keepOnLine ?? fits)

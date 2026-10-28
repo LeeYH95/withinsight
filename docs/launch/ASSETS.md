@@ -13,3 +13,7 @@
 - GSAP：官方 npm `gsap@3.14.2`，版权注释保留，适用 GSAP Standard License。根目录 MIT 许可不替代第三方库许可。
 
 素材索引、尺寸及功能承诺对应源码见 `launch-manifest.json`。上游来源与品牌限制见 `NOTICE.md`。
+
+## 0.5.15 清图控件素材
+
+`Sources/Tendedero/Resources/LineControls/ClearScreenshots.png` 和 `ShortScreenshotPole.png` 为本项目独立设计、AI 辅助生成的透明控件素材，分别用于带 × 的小图片入口与短银色取图杆；不含个人截图或第三方品牌素材。显示时在内存裁切透明留白，保留原始 PNG。夹子使用现有原生 `Clothespin` 组件。

@@ -13,6 +13,8 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN_DIR/Tendedero" "$APP/Contents/MacOS/LineNotes.next"
 mv -f "$APP/Contents/MacOS/LineNotes.next" "$APP/Contents/MacOS/LineNotes"
 cp Sources/Tendedero/Resources/NoteAtmosphere.png "$APP/Contents/Resources/NoteAtmosphere.png"
+mkdir -p "$APP/Contents/Resources/LineControls"
+cp Sources/Tendedero/Resources/LineControls/*.png "$APP/Contents/Resources/LineControls/"
 for dir in Sources/Tendedero/Resources/*.lproj; do cp -R "$dir" "$APP/Contents/Resources/"; done
 cp LICENSE "$APP/Contents/Resources/UPSTREAM-LICENSE.txt"
 cp PHOSPHOR-LICENSE.txt "$APP/Contents/Resources/PHOSPHOR-LICENSE.txt"

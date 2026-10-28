@@ -30,6 +30,15 @@ struct Pegged: Identifiable, Equatable {
     }
 }
 
+struct ScreenshotClearBatch {
+    let id = UUID()
+    let items: [Pegged]
+    let targets: [Pegged]
+    let scroll: CGFloat
+    let visibleCount: Int
+    var targetIDs: Set<UUID> { Set(targets.map(\.id)) }
+}
+
 /// The line itself: what hangs on it and what you can do with each item.
 /// The files never move. The line is only a view onto them.
 @MainActor
@@ -42,6 +51,12 @@ final class Line: ObservableObject {
     @Published var selectedNoteID: UUID?
     /// Whether the line has slid down into view.
     @Published var revealed = false
+    @Published private(set) var screenshotClear: ScreenshotClearBatch?
+    @Published private(set) var screenshotClearUndoCount = 0
+    let screenshotSweep = ScreenshotSweepMotion()
+    var onClearScreenshots: ((ScreenshotClearBatch) -> Void)?
+    private var clearedScreenshots: [Pegged] = []
+    private var screenshotClearUndo: (items: [Pegged], order: [UUID], scroll: CGFloat)?
 
     /// Card frames in window coordinates, reported by the views. The panel
     /// uses them to only catch clicks over photos and let the rest through.
@@ -76,9 +91,14 @@ final class Line: ObservableObject {
 
     private let storeKey = "pegged"
     private let initialOrder: [String]
+    private let defaults: UserDefaults
+    private let inboxFolder: URL?
 
-    init(restoring: Bool = true, gusts: Bool = true) {
-        initialOrder = LaunchOptions.lineDefaults.stringArray(forKey: "mixedLineOrder") ?? []
+    init(restoring: Bool = true, gusts: Bool = true, defaults: UserDefaults = LaunchOptions.lineDefaults,
+         inboxFolder: URL? = nil) {
+        self.defaults = defaults
+        self.inboxFolder = inboxFolder
+        initialOrder = defaults.stringArray(forKey: "mixedLineOrder") ?? []
         if restoring { restore() }
         if gusts { scheduleGust() }
     }
@@ -119,6 +139,27 @@ final class Line: ObservableObject {
 
     func removeNote(_ id: UUID) { drop(id, quietly: true) }
     var screenshotCount: Int { items.filter { $0.noteID == nil && !$0.falling }.count }
+    var clearableScreenshotCount: Int { items.filter { $0.noteID == nil && !$0.isRecording && !$0.falling }.count }
+
+    func acceptsPointer(at point: CGPoint) -> Bool {
+        if hitRects.values.contains(where: { $0.insetBy(dx: -4, dy: -4).contains(point) }) { return true }
+        guard items.count > visibleCount else { return false }
+        // Only cards define the scrolling strip. Controls and the undo banner
+        // remain individually clickable without blocking the desktop beside them.
+        let band = items.filter { !$0.falling }.compactMap { hitRects[$0.id] }.reduce(CGRect.null) { $0.union($1) }
+        return !band.isNull && point.y >= band.minY - 4 && point.y <= band.maxY + 4
+    }
+
+    /// Both the view and screen-space falling renderer use the same frozen slots.
+    func hangingX(for id: UUID, width: CGFloat) -> CGFloat {
+        let original = screenshotClear?.items ?? items
+        let newcomers = items.filter { candidate in !original.contains { $0.id == candidate.id } }
+        guard let index = original.firstIndex(where: { $0.id == id })
+            ?? newcomers.firstIndex(where: { $0.id == id }).map({ original.count + $0 }) else { return width / 2 }
+        return Layout.x(index: index, count: original.count, width: max(300, width - Layout.controlsWidth),
+                        visible: screenshotClear?.visibleCount ?? visibleCount,
+                        scroll: screenshotClear?.scroll ?? scroll)
+    }
 
     func move(_ id: UUID, before destination: UUID) {
         move(id, relativeTo: destination, after: false)
@@ -129,7 +170,7 @@ final class Line: ObservableObject {
     }
 
     private func move(_ id: UUID, relativeTo destination: UUID, after: Bool) {
-        guard id != destination, let from = items.firstIndex(where: { $0.id == id }),
+        guard screenshotClear == nil, id != destination, let from = items.firstIndex(where: { $0.id == id }),
               items.contains(where: { $0.id == destination }) else { return }
         let item = items.remove(at: from)
         let target = items.firstIndex(where: { $0.id == destination })!
@@ -163,7 +204,7 @@ final class Line: ObservableObject {
         // A full line lets the oldest photo fall off the far end. Only one: a
         // line hung on a wider screen keeps its length here instead of losing
         // several photos to a single capture.
-        if screenshotCount > maxItems, let oldest = items.first(where: { $0.noteID == nil && !$0.falling }) {
+        if screenshotClear == nil, screenshotCount > maxItems, let oldest = items.first(where: { $0.noteID == nil && !$0.falling }) {
             letGo(oldest.id)
         }
         save()
@@ -181,21 +222,88 @@ final class Line: ObservableObject {
     /// over the whole screen.
     var onFall: ((Pegged) -> Void)?
 
-    func drop(_ id: UUID, quietly: Bool = false) {
+    func drop(_ id: UUID, quietly: Bool = false, animated: Bool = true) {
         guard let i = items.firstIndex(where: { $0.id == id }), !items[i].falling else { return }
-        onFall?(items[i])
+        if animated { onFall?(items[i]) }
         items[i].falling = true
         hitRects[id] = nil
         save()
         if !quietly { play("Pop", volume: 0.25) }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
-            self?.items.removeAll { $0.id == id && $0.falling }
+            guard let self, self.screenshotClear?.targetIDs.contains(id) != true else { return }
+            self.items.removeAll { $0.id == id && $0.falling }
         }
     }
 
     /// "Take everything down": every photo goes the way of its corner cross.
     func clear() {
         takeDown(items.filter { !$0.falling })
+    }
+
+    /// This operation only changes rope membership, including inbox images.
+    /// Commit the whole snapshot before animation so interruption is deterministic.
+    @discardableResult
+    func beginScreenshotClear() -> ScreenshotClearBatch? {
+        guard screenshotClear == nil else { return nil }
+        let targets = items.filter { $0.noteID == nil && !$0.isRecording && !$0.falling }
+        guard !targets.isEmpty else { return nil }
+        let batch = ScreenshotClearBatch(items: items, targets: targets, scroll: scroll, visibleCount: visibleCount)
+        screenshotClearUndo = nil
+        screenshotClearUndoCount = 0
+        clearedScreenshots = []
+        screenshotClear = batch
+        save()
+        return batch
+    }
+
+    func requestScreenshotClear() {
+        guard let batch = beginScreenshotClear() else { return }
+        if let onClearScreenshots { onClearScreenshots(batch) }
+        else { finishScreenshotClear(batch.id) }
+    }
+
+    func releaseScreenshot(_ id: UUID, in batchID: UUID, animated: Bool = true) {
+        guard let batch = screenshotClear, batch.id == batchID, batch.targetIDs.contains(id),
+              let item = items.first(where: { $0.id == id && !$0.falling && $0.noteID == nil }) else { return }
+        clearedScreenshots.append(item)
+        drop(id, quietly: true, animated: animated)
+    }
+
+    func finishScreenshotClear(_ id: UUID) {
+        guard let batch = screenshotClear, batch.id == id else { return }
+        for target in batch.targets { releaseScreenshot(target.id, in: id, animated: false) }
+        items.removeAll { batch.targetIDs.contains($0.id) }
+        screenshotClearUndo = (clearedScreenshots, batch.items.map(\.id), batch.scroll)
+        screenshotClearUndoCount = clearedScreenshots.count
+        clearedScreenshots = []
+        screenshotClear = nil
+        scroll = min(scroll, CGFloat(max(0, items.count - visibleCount)) * Layout.spacing)
+        save()
+    }
+
+    @discardableResult
+    func undoScreenshotClear() -> Int {
+        guard screenshotClear == nil, let undo = screenshotClearUndo else { return 0 }
+        let order = Dictionary(uniqueKeysWithValues: undo.order.enumerated().map { ($1, $0) })
+        var restored = 0
+        for var item in undo.items.sorted(by: { order[$0.id, default: 0] < order[$1.id, default: 0] }) {
+            guard FileManager.default.fileExists(atPath: item.url.path),
+                  !items.contains(where: { !$0.falling && ($0.id == item.id || $0.url == item.url) }) else { continue }
+            items.removeAll { $0.id == item.id && $0.falling }
+            item.falling = false; item.flying = false
+            let rank = order[item.id, default: 0]
+            if let after = items.firstIndex(where: { order[$0.id].map { $0 > rank } ?? false }) {
+                items.insert(item, at: after)
+            } else if let before = items.lastIndex(where: { order[$0.id].map { $0 < rank } ?? false }) {
+                items.insert(item, at: before + 1)
+            } else { items.insert(item, at: 0) }
+            restored += 1
+        }
+        screenshotClearUndo = nil
+        screenshotClearUndoCount = 0
+        scroll = min(undo.scroll, CGFloat(max(0, items.count - visibleCount)) * Layout.spacing)
+        save()
+        return restored
     }
 
     /// The photos hung before (left) or after (right) this one.
@@ -282,7 +390,7 @@ final class Line: ObservableObject {
     /// Files anywhere else, like the Desktop, stay where they are.
     func isInInbox(_ id: UUID) -> Bool {
         guard let item = items.first(where: { $0.id == id }), item.noteID == nil else { return false }
-        return item.url.standardizedFileURL.path.hasPrefix(Inbox.folder.standardizedFileURL.path + "/")
+        return item.url.standardizedFileURL.path.hasPrefix((inboxFolder ?? Inbox.folder).standardizedFileURL.path + "/")
     }
 
     /// The corner cross and "Take down" both end up here.
@@ -300,6 +408,7 @@ final class Line: ObservableObject {
     /// of that folder. If the Trash refuses it, it still leaves the line.
     /// Moves along a line that holds more than fit, from a scroll gesture.
     func scroll(by delta: CGFloat) {
+        guard screenshotClear == nil else { return }
         let most = CGFloat(max(0, items.count - visibleCount)) * Layout.spacing
         let next = min(most, max(0, scroll + delta))
         if next != scroll { scroll = next }
@@ -308,6 +417,7 @@ final class Line: ObservableObject {
     /// After Keep on line is lowered, the oldest photos past it go the way
     /// of a full line.
     func trim() {
+        guard screenshotClear == nil else { return }
         while screenshotCount > maxItems, let oldest = items.first(where: { $0.noteID == nil && !$0.falling }) {
             letGo(oldest.id)
         }
@@ -401,16 +511,17 @@ final class Line: ObservableObject {
     // MARK: Persistence
 
     private func save() {
-        let paths = items.filter { $0.noteID == nil && !$0.falling }.map(\.url.path)
-        LaunchOptions.lineDefaults.set(items.filter { !$0.falling }.map(orderKey), forKey: "mixedLineOrder")
-        LaunchOptions.lineDefaults.set(paths, forKey: storeKey)
+        let excluded = screenshotClear?.targetIDs ?? []
+        let saved = items.filter { !$0.falling && !excluded.contains($0.id) }
+        defaults.set(saved.map(orderKey), forKey: "mixedLineOrder")
+        defaults.set(saved.filter { $0.noteID == nil }.map(\.url.path), forKey: storeKey)
     }
 
     /// Everything comes back as it was. This runs before the line knows its
     /// screen, so the capacity is still the default one: hanging through
     /// `hang` would let photos fall off a wide screen's line at every launch.
     private func restore() {
-        let paths = LaunchOptions.lineDefaults.stringArray(forKey: storeKey) ?? []
+        let paths = defaults.stringArray(forKey: storeKey) ?? []
         for path in paths where FileManager.default.fileExists(atPath: path) {
             let url = URL(fileURLWithPath: path)
             guard !items.contains(where: { $0.url == url }), let thumb = makeThumbnail(url) else { continue }
@@ -420,7 +531,7 @@ final class Line: ObservableObject {
 
     func restorePhotos(paths: [String]? = nil,
                        loader: @escaping @Sendable (URL) -> NSImage? = { makeThumbnail($0) }) async {
-        let saved = paths ?? LaunchOptions.lineDefaults.stringArray(forKey: storeKey) ?? []
+        let saved = paths ?? defaults.stringArray(forKey: storeKey) ?? []
         // File Provider and recording thumbnails may take an arbitrary amount
         // of time. The startup window must still be able to repaint or cancel.
         let photos = await Task.detached(priority: .userInitiated) {

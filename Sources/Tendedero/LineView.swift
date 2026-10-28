@@ -25,7 +25,7 @@ enum Layout {
     static var cardWidth: CGFloat { (150 * size.scale).rounded() }
     static var spacing: CGFloat { cardWidth + 24 }
     static var panelHeight: CGFloat { photoMaxHeight + 106 }
-    static let controlsWidth: CGFloat = 104
+    static let controlsWidth: CGFloat = 149
     static let ropeTop: CGFloat = 10
     static let pinAbove: CGFloat = 9.5
 
@@ -71,9 +71,8 @@ struct LineView: View {
                 }
 
                 ZStack(alignment: .topLeading) {
-                    ForEach(Array(line.items.enumerated()), id: \.element.id) { index, item in
-                        let x = Layout.x(index: index, count: line.items.count, width: contentWidth,
-                                         visible: line.visibleCount, scroll: line.scroll)
+                    ForEach(line.items) { item in
+                        let x = line.hangingX(for: item.id, width: width)
                         let ropeY = Layout.ropeY(x: x, width: width)
                         PeggedView(item: item, line: line)
                             .frame(width: Layout.cardWidth, height: Layout.panelHeight - ropeY, alignment: .top)
@@ -83,13 +82,22 @@ struct LineView: View {
                 }
                 .frame(width: contentWidth, height: geo.size.height, alignment: .topLeading)
                 .clipped()
+                ScreenshotSweepOverlay(motion: line.screenshotSweep)
+                ScreenshotClearControl(line: line)
+                    .position(x: width - 128, y: Layout.ropeY(x: width - 128, width: width) - LineControl.pinAbove + LineControl.hangingHeight / 2)
                 LineControl(line: line, isNew: false)
                     .position(x: width - 79, y: Layout.ropeY(x: width - 79, width: width) - LineControl.pinAbove + LineControl.hangingHeight / 2)
                 LineControl(line: line, isNew: true)
                     .position(x: width - 34, y: Layout.ropeY(x: width - 34, width: width) - LineControl.pinAbove + LineControl.hangingHeight / 2)
+                if line.screenshotClear == nil, line.screenshotClearUndoCount > 0 {
+                    ScreenshotClearResult(line: line)
+                        .position(x: width / 2, y: geo.size.height - 23)
+                        .transition(.opacity)
+                }
             }
             .animation(HangingMotion.reduced ? nil : .spring(response: 0.55, dampingFraction: 0.78), value: line.items.map(\.id))
             .animation(HangingMotion.reduced ? nil : .easeInOut(duration: 0.3), value: line.items.isEmpty)
+            .animation(HangingMotion.reduced ? nil : .easeOut(duration: 0.15), value: line.screenshotClearUndoCount)
             // Tucked away, the whole line waits above the top edge and slides
             // out from under the menu bar, the way an auto-hiding Dock does.
             .offset(y: line.revealed ? 0 : -(Layout.panelHeight + 12))

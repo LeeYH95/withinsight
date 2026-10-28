@@ -52,10 +52,19 @@
       ]
     },
     {
-      "text": "当前版本 0.5.14 (22)，Apple Silicon、本地签名、最低 macOS 14、未公证",
+      "text": "当前版本 0.5.15 (23)，Apple Silicon、本地签名、最低 macOS 14、未公证",
       "evidence": [
         "scripts/build-release.sh",
         "scripts/build-dev-app.sh"
+      ]
+    },
+    {
+      "text": "一键从挂绳取下当前全部截图，保留闪念、录像、原文件和后来截图，完成后可撤销",
+      "evidence": [
+        "Sources/Tendedero/Line.swift",
+        "Sources/Tendedero/ScreenshotClearControl.swift",
+        "Sources/Tendedero/ScreenshotSweep.swift",
+        "Tests/LineIntegrationTests/ScreenshotClearTests.swift"
       ]
     }
   ],
@@ -210,6 +219,24 @@
       "rights": "project-created; fictional demo content; upstream UI source under MIT; Phosphor Icons under MIT",
       "width": 496,
       "height": 322
+    },
+    {
+      "path": "Sources/Tendedero/Resources/LineControls/ClearScreenshots.png",
+      "role": "native-control-artwork",
+      "origin": "AI-assisted-original",
+      "source": "docs/launch/ASSETS.md",
+      "rights": "project-created; independent original control artwork; no personal content",
+      "width": 1374,
+      "height": 1145
+    },
+    {
+      "path": "Sources/Tendedero/Resources/LineControls/ShortScreenshotPole.png",
+      "role": "native-control-artwork",
+      "origin": "AI-assisted-original",
+      "source": "docs/launch/ASSETS.md",
+      "rights": "project-created; independent original control artwork; no personal content",
+      "width": 2124,
+      "height": 740
     }
   ],
   "readmes": [

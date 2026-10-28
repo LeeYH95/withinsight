@@ -48,6 +48,7 @@ final class CaptureFlight {
     private var start: CFTimeInterval = 0
     private var timer: Timer?
     private var completion: () -> Void = {}
+    private var itemID: UUID?
 
     private static var current: [CaptureFlight] = []
 
@@ -59,16 +60,28 @@ final class CaptureFlight {
     ///   - from: the captured area, in screen coordinates.
     ///   - to: the card's frame on the line, in screen coordinates, unrotated.
     ///   - tilt: the card's resting tilt in degrees, clockwise, as SwiftUI uses.
-    static func fly(image: CGImage, from: CGRect, to: CGRect, tilt: CGFloat, on screen: NSScreen,
+    static func fly(image: CGImage, from: CGRect, to: CGRect, tilt: CGFloat, on screen: NSScreen, id: UUID? = nil,
                     completion: @escaping () -> Void) {
         guard !HangingMotion.reduced else { completion(); return }
         let flight = CaptureFlight(image: image, from: from, to: to, tilt: tilt, screen: screen)
+        flight.itemID = id
         current.append(flight)
         flight.completion = { [weak flight] in
             completion()
             current.removeAll { $0 === flight }
         }
         flight.run()
+    }
+
+    /// Land a clear batch's incoming cards before the pole begins. Newer
+    /// captures keep flying; no old overlay can reappear after the sweep.
+    static func settle(_ ids: Set<UUID>) {
+        let arrivals = current.filter { !$0.falling && $0.itemID.map(ids.contains) == true }
+        for flight in arrivals {
+            flight.update(1)
+            flight.finish()
+            flight.window.orderOut(nil)
+        }
     }
 
     /// A discarded card falling off the line, drawn over the whole screen so
@@ -152,9 +165,7 @@ final class CaptureFlight {
         let k = min(1, (CACurrentMediaTime() - start) / duration)
         if falling { updateFall(k) } else { update(k) }
         guard k >= 1 else { return }
-        timer?.invalidate()
-        timer = nil
-        completion()
+        finish()
         if falling {
             window.orderOut(nil)
             return
@@ -166,6 +177,14 @@ final class CaptureFlight {
         }, completionHandler: { [window] in
             MainActor.assumeIsolated { window.orderOut(nil) }
         })
+    }
+
+    private func finish() {
+        timer?.invalidate()
+        timer = nil
+        let callback = completion
+        completion = {}
+        callback()
     }
 
     private func updateFall(_ raw: Double) {
