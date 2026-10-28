@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 
 /// One native text system owns the entire body, including selection and IME composition.
 @MainActor final class NotesContinuousTextView: NotesTextView {
+    let linkPastes = NotesLinkPasteController()
     private var ownedStorage: NSTextStorage?
     var trailingAttributes: [NSAttributedString.Key: Any] = [:]
     var readingScale: CGFloat = 1
@@ -31,6 +32,7 @@ import UniformTypeIdentifiers
         isEditable = true; isSelectable = true; drawsBackground = false
         isAutomaticQuoteSubstitutionEnabled = true; isAutomaticDashSubstitutionEnabled = true
         isAutomaticLinkDetectionEnabled = true
+        linkTextAttributes = [.foregroundColor: NSColor(NotesTheme.accent), .underlineStyle: NSUnderlineStyle.single.rawValue]
         textContainerInset = NSSize(width: 0, height: 4)
         textContainer?.lineFragmentPadding = 0; textContainer?.widthTracksTextView = true
         isVerticallyResizable = true; isHorizontallyResizable = false
@@ -41,6 +43,10 @@ import UniformTypeIdentifiers
         typingAttributes = defaultAttributes()
     }
     required init?(coder: NSCoder) { super.init(coder: coder) }
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if newWindow == nil { linkPastes.cancelAll() }
+        super.viewWillMove(toWindow: newWindow)
+    }
     override func scrollRangeToVisible(_ range: NSRange) {
         super.scrollRangeToVisible(range)
         guard let scroll = enclosingScrollView, let paper = scroll.documentView,
@@ -65,6 +71,7 @@ import UniformTypeIdentifiers
     }
     func loadDocument(_ note: NoteDocument) {
         guard !hasMarkedText() else { return }
+        linkPastes.cancelAll()
         loading = true
         let selection = selectedRange()
         textStorage?.setAttributedString(NotesContinuousDocument.render(note, scale:readingScale, width:max(150,bounds.width), image:imageProvider))
@@ -89,7 +96,23 @@ import UniformTypeIdentifiers
     }
     func cleanTypingAttributes() {
         var attrs = typingAttributes
-        for key in [.attachment, .notesMarker, .notesAttachment, .notesAttachmentName] as [NSAttributedString.Key] { attrs.removeValue(forKey:key) }
+        for key in [.attachment, .notesMarker, .notesAttachment, .notesAttachmentName, .notesPendingLink] as [NSAttributedString.Key] { attrs.removeValue(forKey:key) }
+        let caret = selectedRange()
+        var insideLink: URL?
+        if caret.length == 0, caret.location > 0, let storage = textStorage, caret.location < storage.length {
+            let left = NotesWebLink.destination(from: storage.attribute(.link, at: caret.location - 1, effectiveRange: nil))
+            let right = NotesWebLink.destination(from: storage.attribute(.link, at: caret.location, effectiveRange: nil))
+            if left == right { insideLink = right }
+        } else if caret.length > 0, let storage = textStorage, NSMaxRange(caret) <= storage.length,
+                  let target = NotesWebLink.destination(from: storage.attribute(.link, at: caret.location, effectiveRange: nil)) {
+            var shared = true
+            storage.enumerateAttribute(.link, in: caret) { value, _, _ in
+                if NotesWebLink.destination(from: value) != target { shared = false }
+            }
+            if shared { insideLink = target }
+        }
+        if let insideLink { attrs[.link] = insideLink; attrs[.toolTip] = insideLink.absoluteString }
+        else { attrs.removeValue(forKey: .link); attrs.removeValue(forKey: .toolTip) }
         let kind = attrs[.notesKind] as? String ?? "paragraph"
         if kind == "image" || kind == "file" { attrs = defaultAttributes() }
         attrs[.font] = attrs[.font] ?? NSFont.systemFont(ofSize:NotesContinuousDocument.bodySize * readingScale)
@@ -131,12 +154,33 @@ import UniformTypeIdentifiers
                 return
             }
         }
-        super.insertText(insertString, replacementRange:replacementRange)
-        if !hasMarkedText() { publishChange(); onLayout?() }
+        if let text = insertString as? String, !hasMarkedText() {
+            let insertion = replacementRange.location == NSNotFound ? selectedRange() : replacementRange
+            let adjacent = [insertion.location - 1, insertion.location, NSMaxRange(insertion) - 1]
+            let touchesLink = adjacent.contains { index in
+                guard let storage = textStorage, index >= 0, index < storage.length else { return false }
+                return storage.attribute(.link, at: index, effectiveRange: nil) != nil
+                    || storage.attribute(.notesPendingLink, at: index, effectiveRange: nil) != nil
+            }
+            if touchesLink {
+                // Only link boundaries need explicit cleanup. Ordinary typing
+                // keeps the existing single native edit/publish path.
+                let attrs = typingAttributes
+                super.insertText(NSAttributedString(string: text, attributes: attrs), replacementRange: replacementRange)
+                let inserted = NSRange(location: insertion.location, length: text.utf16.count)
+                if let storage = textStorage, NSMaxRange(inserted) <= storage.length,
+                   (storage.string as NSString).substring(with: inserted) == text {
+                    storage.setAttributes(attrs, range: inserted)
+                    didChangeText()
+                }
+            } else { super.insertText(insertString, replacementRange: replacementRange) }
+        } else { super.insertText(insertString, replacementRange:replacementRange) }
+        if !hasMarkedText() { publishChange(); onLayout?(); linkPastes.flushCompletedTitles(in: self) }
     }
     override func unmarkText() {
         super.unmarkText()
         if !loading { cleanTypingAttributes(); publishChange(); onLayout?() }
+        linkPastes.flushCompletedTitles(in: self)
     }
     private func paragraphRanges() -> [NSRange] {
         let ns = string as NSString, selection = selectedRange()
@@ -247,11 +291,13 @@ import UniformTypeIdentifiers
         }
         attrs[.notesBlock] = UUID().uuidString; attrs[.notesChecked] = false
         attrs.removeValue(forKey:.attachment); attrs.removeValue(forKey:.notesMarker)
+        for key in [.link, .toolTip, .notesPendingLink] as [NSAttributedString.Key] { attrs.removeValue(forKey: key) }
         if kind == "image" || kind == "file" || (attrs[.notesHeading] as? Int ?? 0) > 0 && selection.location >= NSMaxRange(range) - (string as NSString).substring(with:range).hasSuffix("\n").intValue {
             attrs = defaultAttributes()
         }
         var newlineAttrs = attributes(at:max(range.location,selection.location - 1))
         newlineAttrs.removeValue(forKey:.notesMarker); newlineAttrs.removeValue(forKey:.attachment)
+        for key in [.link, .toolTip, .notesPendingLink] as [NSAttributedString.Key] { newlineAttrs.removeValue(forKey: key) }
         let next = NSMutableAttributedString(string:"\n",attributes:newlineAttrs)
         if kind == "checklist" || kind == "bullet" {
             let marker = kind == "checklist" ? NotesContinuousDocument.taskMarker(checked:false,size:(attrs[.font] as? NSFont)?.pointSize ?? NotesContinuousDocument.bodySize * readingScale) : NSAttributedString(string:"•\t",attributes:[.notesMarker:true,.font:attrs[.font] ?? headingFont(0)])
@@ -277,6 +323,7 @@ import UniformTypeIdentifiers
     }
     @discardableResult func insertPasted(_ value: NSAttributedString) -> Bool {
         let safe = NSMutableAttributedString(attributedString:value)
+        NotesContinuousDocument.sanitizeLinks(in: safe)
         let source = NSAttributedString(attributedString:safe)
         source.enumerateAttributes(in:NSRange(location:0,length:source.length)) { attrs,range,_ in
             for key in [.notesBlock,.notesKind,.notesHeading,.notesChecked,.notesMarker,.notesAttachment,.notesAttachmentName] as [NSAttributedString.Key] { safe.removeAttribute(key,range:range) }
@@ -350,6 +397,7 @@ import UniformTypeIdentifiers
     private struct ClipboardStyle: Codable {
         var location: Int; var length: Int; var size: Double; var fontName: String
         var bold: Bool; var italic: Bool; var underline: Int; var strike: Int
+        var link: String?
     }
     private struct ClipboardBlock: Codable {
         var kind: NoteBlock.Kind; var text: String; var heading: Int; var bullet: Bool
@@ -381,7 +429,7 @@ import UniformTypeIdentifiers
                 rich.enumerateAttributes(in: NSRange(location: 0, length: rich.length)) { attrs, range, _ in
                     let font = attrs[.font] as? NSFont ?? NSFont.systemFont(ofSize: NotesContinuousDocument.bodySize)
                     let traits = NSFontManager.shared.traits(of: font)
-                    styles.append(ClipboardStyle(location: range.location, length: range.length, size: Double(font.pointSize), fontName: font.fontName, bold: traits.contains(.boldFontMask), italic: traits.contains(.italicFontMask), underline: attrs[.underlineStyle] as? Int ?? 0, strike: attrs[.strikethroughStyle] as? Int ?? 0))
+                    styles.append(ClipboardStyle(location: range.location, length: range.length, size: Double(font.pointSize), fontName: font.fontName, bold: traits.contains(.boldFontMask), italic: traits.contains(.italicFontMask), underline: attrs[.underlineStyle] as? Int ?? 0, strike: attrs[.strikethroughStyle] as? Int ?? 0, link: NotesWebLink.destination(from: attrs[.link])?.absoluteString))
                 }
             }
             return ClipboardBlock(kind: block.kind, text: block.text, heading: block.markdown?.hasPrefix("# ") == true ? 1 : block.markdown?.hasPrefix("## ") == true ? 2 : 0, bullet: block.kind == .paragraph && block.markdown?.hasPrefix("- ") == true, checked: block.isChecked, attachment: block.attachmentID, styles: styles)
@@ -420,6 +468,8 @@ import UniformTypeIdentifiers
             let data = try JSONEncoder().encode(payload)
             guard data.count <= Self.clipboardLimit else { throw ClipboardError.tooLarge }
             let selected = NSMutableAttributedString(attributedString: attributedString().attributedSubstring(from: selectedRange()))
+            NotesContinuousDocument.sanitizeLinks(in: selected)
+            selected.removeAttribute(.notesPendingLink, range: NSRange(location: 0, length: selected.length))
             // Give other applications real file wrappers, instead of a drawing cell.
             selected.enumerateAttribute(.notesAttachment, in: NSRange(location: 0, length: selected.length)) { value, range, _ in
                 guard let id = (value as? String).flatMap(UUID.init(uuidString:)), let asset = payload.assets.first(where: { $0.id == id }) else { return }
@@ -513,7 +563,10 @@ import UniformTypeIdentifiers
                     var font = preservePastedFormatting ? (NSFont(name: style.fontName, size: size) ?? NSFont.systemFont(ofSize: size)) : NSFont.systemFont(ofSize: size)
                     if style.bold { font = NSFontManager.shared.convert(font, toHaveTrait: .boldFontMask) }
                     if style.italic { font = NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask) }
-                    rich.addAttributes([.font: font, .underlineStyle: style.underline, .strikethroughStyle: style.strike], range: NSRange(location: style.location, length: style.length))
+                    let range = NSRange(location: style.location, length: style.length)
+                    rich.addAttributes([.font: font, .underlineStyle: style.underline, .strikethroughStyle: style.strike], range: range)
+                    if let url = NotesWebLink.destination(from: style.link) { rich.addAttribute(.link, value: url, range: range) }
+                    else { rich.removeAttribute(.link, range: range) }
                 }
                 let rtf = try rich.data(from: NSRange(location: 0, length: rich.length), documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf])
                 let markdown = value.heading == 1 ? "# " + value.text : value.heading == 2 ? "## " + value.text : value.bullet ? "- " + value.text : value.text
@@ -559,8 +612,17 @@ import UniformTypeIdentifiers
         if let data = board.data(forType:.rtfd) { rich = NSAttributedString(rtfd:data,documentAttributes:nil) }
         if rich == nil, let data = board.data(forType:.rtf) { rich = NSAttributedString(rtf:data,documentAttributes:nil) }
         if rich == nil, let data = board.data(forType:.html) { rich = NSAttributedString(html:data,documentAttributes:nil) }
+        if let rich, rich.length > 0 {
+            var hasLink = false
+            rich.enumerateAttribute(.link, in: NSRange(location: 0, length: rich.length)) { value, _, _ in
+                if value != nil { hasLink = true }
+            }
+            if hasLink { return insertPasted(rich) }
+        }
+        let text = board.string(forType: .string) ?? board.string(forType: .URL)
+        if let text, let url = NotesWebLink.url(from: text) { return linkPastes.paste(url, into: self) }
         if let rich, rich.length > 0 { return insertPasted(rich) }
-        if let text = board.string(forType:.string) { insertText(text,replacementRange:selectedRange()); return true }
+        if let text { insertText(text,replacementRange:selectedRange()); return true }
         if let image = NSImage(pasteboard:board) { session?.pasteImage(image); return true }
         return false
     }
@@ -697,6 +759,7 @@ struct NotesContinuousBody: NSViewRepresentable {
             let index = min(view.selectedRange().location,max(0,(view.textStorage?.length ?? 0) - 1))
             if (view.textStorage?.length ?? 0) > 0, let id = (view.textStorage?.attribute(.notesBlock,at:index,effectiveRange:nil) as? String).flatMap(UUID.init(uuidString:)) { view.blockID = id; parent.session.focusedBlock = id }
         }
+        func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool { true }
         func measure() {
             guard let view, let container = view.textContainer, let manager = view.layoutManager else { return }
             manager.ensureLayout(for:container)

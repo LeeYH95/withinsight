@@ -1,14 +1,17 @@
 #!/bin/bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
-export CLANG_MODULE_CACHE_PATH="$PWD/.build/ModuleCache"
-export SWIFTPM_MODULECACHE_OVERRIDE="$PWD/.build/ModuleCache"
+notes_scratch="${LINENOTES_SWIFT_SCRATCH_PATH:-$PWD/.build}"
+notes_module_cache="${LINENOTES_MODULE_CACHE_PATH:-$notes_scratch/ModuleCache}"
+notes_output="${LINENOTES_BUILD_OUTPUT_DIR:-$PWD/build}"
+export CLANG_MODULE_CACHE_PATH="$notes_module_cache"
+export SWIFTPM_MODULECACHE_OVERRIDE="$notes_module_cache"
 CONFIG="${1:-debug}"
 notes_app_name="${LINENOTES_APP_NAME:-LineNotes Dev}"
 notes_bundle_id="${LINENOTES_BUNDLE_ID:-local.linenotes.dev}"
-APP="build/$notes_app_name.app"
-swift build -c "$CONFIG" --disable-sandbox
-BIN_DIR="$(swift build -c "$CONFIG" --show-bin-path)"
+APP="$notes_output/$notes_app_name.app"
+swift build -c "$CONFIG" --scratch-path "$notes_scratch" --disable-sandbox
+BIN_DIR="$(swift build -c "$CONFIG" --scratch-path "$notes_scratch" --disable-sandbox --show-bin-path)"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN_DIR/Tendedero" "$APP/Contents/MacOS/LineNotes.next"
 mv -f "$APP/Contents/MacOS/LineNotes.next" "$APP/Contents/MacOS/LineNotes"
@@ -19,13 +22,13 @@ for dir in Sources/Tendedero/Resources/*.lproj; do cp -R "$dir" "$APP/Contents/R
 cp LICENSE "$APP/Contents/Resources/UPSTREAM-LICENSE.txt"
 cp PHOSPHOR-LICENSE.txt "$APP/Contents/Resources/PHOSPHOR-LICENSE.txt"
 if [[ "${LINENOTES_BRAND_ICONS:-0}" == "1" ]]; then
-    python3 scripts/make-brand-icons.py --source Sources/Tendedero/Resources/Brand --output build/ShipianIcons
-    cp build/ShipianIcons/ShipianLight.icns build/ShipianIcons/Assets.car "$APP/Contents/Resources/"
-    cp build/ShipianIcons/ShipianIconLight.png build/ShipianIcons/ShipianIconDark.png "$APP/Contents/Resources/"
+    python3 scripts/make-brand-icons.py --source Sources/Tendedero/Resources/Brand --output "$notes_output/ShipianIcons"
+    cp "$notes_output/ShipianIcons/ShipianLight.icns" "$notes_output/ShipianIcons/Assets.car" "$APP/Contents/Resources/"
+    cp "$notes_output/ShipianIcons/ShipianIconLight.png" "$notes_output/ShipianIcons/ShipianIconDark.png" "$APP/Contents/Resources/"
     rm -f "$APP/Contents/Resources/ShipianDark.icns" "$APP/Contents/Resources/ShipianSystemIconLight.png" "$APP/Contents/Resources/ShipianSystemIconDark.png"
 else
-    swift scripts/make-dev-icon.swift build/LineNotes.iconset
-    iconutil -c icns build/LineNotes.iconset -o "$APP/Contents/Resources/LineNotes.icns"
+    swift -module-cache-path "$notes_module_cache" scripts/make-dev-icon.swift "$notes_output/LineNotes.iconset"
+    iconutil -c icns "$notes_output/LineNotes.iconset" -o "$APP/Contents/Resources/LineNotes.icns"
 fi
 # Only our independently generated demonstration photos, never upstream artwork.
 DEMO_ASSETS="Sources/Tendedero/Resources/Demo"

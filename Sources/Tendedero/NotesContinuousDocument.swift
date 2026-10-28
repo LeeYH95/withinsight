@@ -34,6 +34,7 @@ extension NSAttributedString.Key {
                 } else {
                     content = NSMutableAttributedString(string: block.text, attributes: [.font:NSFont.systemFont(ofSize: bodySize)])
                 }
+                sanitizeLinks(in: content)
                 if bullet, content.string.hasPrefix("• ") { content.deleteCharacters(in: NSRange(location: 0, length: 2)) }
                 let unscaled = NSAttributedString(attributedString: content)
                 unscaled.enumerateAttribute(.font, in: NSRange(location: 0, length: unscaled.length)) { value, range, _ in
@@ -52,6 +53,20 @@ extension NSAttributedString.Key {
         }
         normalizeLayout(result, scale: scale)
         return result
+    }
+    /// Imported and historical rich text must cross the same web-link boundary.
+    static func sanitizeLinks(in value: NSMutableAttributedString) {
+        let range = NSRange(location: 0, length: value.length)
+        value.removeAttribute(.notesPendingLink, range: range)
+        let original = NSAttributedString(attributedString: value)
+        original.enumerateAttribute(.link, in: range) { link, run, _ in
+            guard link != nil else { return }
+            if let url = NotesWebLink.destination(from: link) { value.addAttribute(.link, value: url, range: run) }
+            else {
+                value.removeAttribute(.link, range: run)
+                value.removeAttribute(.toolTip, range: run)
+            }
+        }
     }
     static func taskMarker(checked: Bool, size: CGFloat, baselineFont: NSFont? = nil) -> NSAttributedString {
         let side = max(14,size), stroke = max(1.2,size * 0.085)
@@ -180,7 +195,7 @@ extension NSAttributedString.Key {
             let original = NSAttributedString(attributedString: body)
             original.enumerateAttributes(in: NSRange(location: 0, length: original.length)) { attributes, range, _ in
                 if let font = attributes[.font] as? NSFont { body.addAttribute(.font, value:NSFontManager.shared.convert(font, toSize:font.pointSize / max(0.1, scale)), range:range) }
-                for key in [.notesBlock, .notesKind, .notesChecked, .notesHeading, .notesAttachment, .notesAttachmentName, .notesMarker] as [NSAttributedString.Key] { body.removeAttribute(key, range:range) }
+                for key in [.notesBlock, .notesKind, .notesChecked, .notesHeading, .notesAttachment, .notesAttachmentName, .notesMarker, .notesPendingLink] as [NSAttributedString.Key] { body.removeAttribute(key, range:range) }
             }
             var markdown = RichNoteTextView.Coordinator.markdown(body)
             if part.heading > 0 { markdown = String(repeating:"#", count:part.heading) + " " + markdown }

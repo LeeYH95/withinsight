@@ -12,6 +12,12 @@ class NotesTextView: NSTextView {
     var blockID: UUID?
     var checklist = false
     var publish: (() -> Void)?
+    var openLink: (URL) -> Void = { NSWorkspace.shared.open($0) }
+    @discardableResult func activateLink(at index: Int, modifiers: NSEvent.ModifierFlags) -> Bool {
+        guard modifiers.contains(.command), index >= 0, index < (textStorage?.length ?? 0),
+              let url = NotesWebLink.destination(from: textStorage?.attribute(.link, at: index, effectiveRange: nil)) else { return false }
+        openLink(url); return true
+    }
     // Native text undo targets become stale when a block view is removed. The session
     // records document snapshots, so NSTextView must not register its own targets.
     override var undoManager: UndoManager? { nil }
@@ -158,10 +164,7 @@ class NotesTextView: NSTextView {
         if event.modifierFlags.contains(.command), let layoutManager, let textContainer {
             let point = convert(event.locationInWindow, from: nil)
             let index = layoutManager.characterIndex(for: NSPoint(x: point.x - textContainerOrigin.x, y: point.y - textContainerOrigin.y), in: textContainer, fractionOfDistanceBetweenInsertionPoints: nil)
-            if index < (textStorage?.length ?? 0), let link = textStorage?.attribute(.link, at: index, effectiveRange: nil) {
-                if let url = link as? URL { NSWorkspace.shared.open(url); return }
-                if let value = link as? String, let url = URL(string: value) { NSWorkspace.shared.open(url); return }
-            }
+            if activateLink(at: index, modifiers: event.modifierFlags) { return }
         }
         super.mouseDown(with: event)
     }
@@ -297,6 +300,10 @@ struct RichNoteTextView: NSViewRepresentable {
                         if (attributes[.underlineStyle] as? Int ?? 0) != 0 { value = "<u>" + value + "</u>" }
                         if traits.contains(.italicFontMask) { value = "*" + value + "*" }
                         if traits.contains(.boldFontMask) { value = "**" + value + "**" }
+                        if let url = NotesWebLink.destination(from: attributes[.link]) {
+                            let destination = url.absoluteString.replacingOccurrences(of: "(", with: "%28").replacingOccurrences(of: ")", with: "%29").replacingOccurrences(of: " ", with: "%20")
+                            value = "[" + value + "](" + destination + ")"
+                        }
                     }
                     result += leading + value + trailing
                 }
