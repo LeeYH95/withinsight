@@ -57,6 +57,7 @@ final class Line: ObservableObject {
     var onClearScreenshots: ((ScreenshotClearBatch) -> Void)?
     private var clearedScreenshots: [Pegged] = []
     private var screenshotClearUndo: (items: [Pegged], order: [UUID], scroll: CGFloat)?
+    private var screenshotClearUndoExpiry: Task<Void, Never>?
 
     /// Card frames in window coordinates, reported by the views. The panel
     /// uses them to only catch clicks over photos and let the rest through.
@@ -248,8 +249,7 @@ final class Line: ObservableObject {
         let targets = items.filter { $0.noteID == nil && !$0.isRecording && !$0.falling }
         guard !targets.isEmpty else { return nil }
         let batch = ScreenshotClearBatch(items: items, targets: targets, scroll: scroll, visibleCount: visibleCount)
-        screenshotClearUndo = nil
-        screenshotClearUndoCount = 0
+        resetScreenshotClearUndo()
         clearedScreenshots = []
         screenshotClear = batch
         save()
@@ -275,6 +275,12 @@ final class Line: ObservableObject {
         items.removeAll { batch.targetIDs.contains($0.id) }
         screenshotClearUndo = (clearedScreenshots, batch.items.map(\.id), batch.scroll)
         screenshotClearUndoCount = clearedScreenshots.count
+        screenshotClearUndoExpiry = Task { @MainActor [weak self] in
+            do { try await Task.sleep(for: .seconds(3)) }
+            catch { return }
+            guard !Task.isCancelled else { return }
+            self?.resetScreenshotClearUndo()
+        }
         clearedScreenshots = []
         screenshotClear = nil
         scroll = min(scroll, CGFloat(max(0, items.count - visibleCount)) * Layout.spacing)
@@ -299,11 +305,17 @@ final class Line: ObservableObject {
             } else { items.insert(item, at: 0) }
             restored += 1
         }
-        screenshotClearUndo = nil
-        screenshotClearUndoCount = 0
+        resetScreenshotClearUndo()
         scroll = min(undo.scroll, CGFloat(max(0, items.count - visibleCount)) * Layout.spacing)
         save()
         return restored
+    }
+
+    private func resetScreenshotClearUndo() {
+        screenshotClearUndoExpiry?.cancel()
+        screenshotClearUndoExpiry = nil
+        screenshotClearUndo = nil
+        screenshotClearUndoCount = 0
     }
 
     /// The photos hung before (left) or after (right) this one.
