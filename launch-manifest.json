@@ -52,10 +52,21 @@
       ]
     },
     {
-      "text": "当前版本 0.5.15 (23)，Apple Silicon、本地签名、最低 macOS 14、未公证",
+      "text": "当前版本 0.5.16 (24)，Apple Silicon、本地签名、最低 macOS 14、未公证",
       "evidence": [
         "scripts/build-release.sh",
         "scripts/build-dev-app.sh"
+      ]
+    },
+    {
+      "text": "粘贴单个完整 HTTP(S) 网址后读取网页标题，正文文字链接保留原目标，支持 Command 点击、保存、复制和 Markdown 导出",
+      "evidence": [
+        "Sources/Tendedero/NotesLinkMetadata.swift",
+        "Sources/Tendedero/NotesLinkPasteController.swift",
+        "Sources/Tendedero/NotesContinuousTextView.swift",
+        "Sources/Tendedero/RichNoteTextView.swift",
+        "Tests/LineIntegrationTests/LinkTitlePasteTests.swift",
+        "Tests/LineIntegrationTests/LinkRoundTripTests.swift"
       ]
     },
     {
