@@ -52,7 +52,7 @@
       ]
     },
     {
-      "text": "当前版本 0.5.16 (24)，Apple Silicon、本地签名、最低 macOS 14、未公证",
+      "text": "当前版本 0.5.17 (25)，Apple Silicon、本地签名、最低 macOS 14、未公证",
       "evidence": [
         "scripts/build-release.sh",
         "scripts/build-dev-app.sh"
@@ -76,6 +76,14 @@
         "Sources/Tendedero/ScreenshotClearControl.swift",
         "Sources/Tendedero/ScreenshotSweep.swift",
         "Tests/LineIntegrationTests/ScreenshotClearTests.swift"
+      ]
+    },
+    {
+      "text": "挂绳闪念按实际可用高度预览正文与待办，超出末行省略，保留原顺序及勾选框和续行缩进",
+      "evidence": [
+        "Sources/Tendedero/NoteThumbnail.swift",
+        "Tests/LineIntegrationTests/NoteThumbnailTests.swift",
+        "Tests/LineIntegrationTests/ChecklistAlignmentTests.swift"
       ]
     }
   ],
