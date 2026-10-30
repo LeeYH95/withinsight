@@ -136,10 +136,6 @@ struct NotesLibraryView: View {
                         Label("新建闪念", systemImage: "plus").font(.system(size: 14, weight: .medium))
                             .padding(.horizontal, 15).frame(height: 40).contentShape(Rectangle())
                     }.buttonStyle(NotesPressStyle()).accessibilityLabel("新建闪念")
-                    Rectangle().fill(NotesTheme.onAccent.opacity(0.26)).frame(width: 1, height: 18)
-                    NotesMenuButton("选择新建模板", tooltip: "选择新建模板", alignment: .trailing, menu: newNoteMenu) {
-                        Image(systemName: "chevron.down").font(.system(size: 10, weight: .semibold)).frame(width: 34, height: 40)
-                    }
                 }.foregroundStyle(NotesTheme.onAccent).background(NotesTheme.accent, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                     .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous)).fixedSize()
                 NotesIconButton(symbol: "gearshape", label: "闪念偏好设置", size: 40) { workspace.showSettings() }
@@ -185,13 +181,6 @@ struct NotesLibraryView: View {
             .background(NotesTheme.shell, in: RoundedRectangle(cornerRadius: 10))
             .overlay(RoundedRectangle(cornerRadius: 10).stroke(searching ? NotesTheme.accent.opacity(0.55) : NotesTheme.border, lineWidth: 1))
             .animation(NotesMotion.quick, value: searching)
-    }
-    private func newNoteMenu() -> NSMenu {
-        let menu = NSMenu()
-        menu.addItem(ClosureMenuItem("文字闪念") { workspace.newNote() }.notesSymbol("doc.text"))
-        menu.addItem(ClosureMenuItem("待办清单") { workspace.newNote(template: .checklist) }.notesSymbol("checklist"))
-        menu.addItem(ClosureMenuItem("图文闪念") { workspace.newNote(template: .image) }.notesSymbol("photo"))
-        return menu
     }
     private func sortMenu() -> NSMenu {
         let menu = NSMenu()

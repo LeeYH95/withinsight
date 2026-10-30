@@ -226,6 +226,17 @@ final class NotesCoreTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: source.path))
     }
 
+    @MainActor func testNestedTaskExportPreservesIndentAndCurrentCheckedState() throws {
+        let directory = try temporaryDirectory(), store = try NotesStore(directory: directory.appendingPathComponent("store"))
+        var note = try store.create()
+        note.blocks = [NoteBlock(text: "父项", markdown: "1. 父项"), NoteBlock(kind: .checklist, text: "子任务", markdown: "  - [ ] **子任务**", isChecked: true)]
+        try store.update(note)
+        let destination = directory.appendingPathComponent("nested.md")
+        try store.exportMarkdown(note.id, to: destination)
+        let exported = try String(contentsOf: destination, encoding: .utf8)
+        XCTAssertTrue(exported.contains("  - [x] **子任务**"))
+    }
+
     @MainActor
     func testMissingIDsThrowConsistentLocalizedErrors() async throws {
         let store = try NotesStore(directory: temporaryDirectory())

@@ -94,8 +94,8 @@ final class LineMenuLifecycleTests: XCTestCase {
         }
         presenter.show(LineControl.templateMenu(for: line), from: anchor)
         let popup = try XCTUnwrap(presenter.panel)
-        presenter.choose(1)
-        XCTAssertEqual(called, ["checklist"])
+        presenter.choose(0)
+        XCTAssertEqual(called, ["text"])
         XCTAssertFalse(popup.isVisible)
     }
 }

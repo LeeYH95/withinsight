@@ -36,7 +36,9 @@ import NotesCore
         let blocks = note.blocks.filter { $0.kind == .paragraph || $0.kind == .checklist }
         for (index, block) in blocks.enumerated() {
             let text = NSMutableAttributedString(string: "")
+            let list = NotesListEditing.descriptor(block)
             if block.kind == .checklist { text.append(marker(checked: block.isChecked)) }
+            else if let list, list.kind == "ordered" { text.append(NSAttributedString(string: "\(list.number).\t")) }
             text.append(NSAttributedString(string: block.text.isEmpty && block.kind == .checklist ? "待办事项" : block.text))
             if index < blocks.count - 1 { text.append(NSAttributedString(string: "\n")) }
             let string = text.string as NSString
@@ -45,9 +47,10 @@ import NotesCore
                 let range = string.paragraphRange(for: NSRange(location: cursor, length: 0))
                 let style = NSMutableParagraphStyle()
                 style.lineBreakMode = .byWordWrapping
-                if block.kind == .checklist {
-                    style.headIndent = 35
-                    style.firstLineHeadIndent = cursor == 0 ? 0 : style.headIndent
+                if let list {
+                    let indent: CGFloat = list.level > 0 ? 30 : 0
+                    style.headIndent = 35 + indent
+                    style.firstLineHeadIndent = cursor == 0 ? indent : style.headIndent
                     style.tabStops = [NSTextTab(textAlignment: .left, location: style.headIndent)]
                     style.paragraphSpacing = NSMaxRange(range) == text.length && index < blocks.count - 1 ? 12 : 0
                 }

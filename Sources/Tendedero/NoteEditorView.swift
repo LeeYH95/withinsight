@@ -62,7 +62,12 @@ struct NoteEditorView: View {
             .overlay(alignment: .bottom) { NotesEditorResizeHandle(axis: .vertical).frame(height: 7).padding(.horizontal, 28) }
             .overlay(alignment: .bottomTrailing) { NotesEditorResizeHandle(axis: .both).frame(width: 22,height: 22).padding(6) }
             .onDrop(of: [.fileURL, .image], isTargeted: nil, perform: drop)
-            .sheet(item: $preview) { attachment in imagePreview(attachment) }
+            .sheet(item: $preview) { attachment in
+                NotesImagePreview(name: attachment.name, image: attachmentImage(attachment),
+                    sourceURL: try? session.localURL(for: attachment),
+                    copy: { session.copyAttachment(attachment) },
+                    export: { session.exportAttachment(attachment) }, close: { preview = nil })
+            }
             .onReceive(session.store.$saveState) { state in if case .failed(let reason) = state { session.failure = reason } }
     }
     private func header(compact: Bool, narrow: Bool) -> some View {
@@ -148,30 +153,12 @@ struct NoteEditorView: View {
     private func attachmentImage(_ attachment: NoteAttachment) -> NSImage? {
         do { return images.image(at: try session.localURL(for: attachment)) } catch { return nil }
     }
-    private func imagePreview(_ attachment: NoteAttachment) -> some View {
-        VStack(spacing: 16) {
-            HStack { Text(attachment.name).font(.headline); Spacer(); Button("完成") { preview = nil }.keyboardShortcut(.cancelAction) }
-            if let image = attachmentImage(attachment) { Image(nsImage: image).resizable().scaledToFit().frame(maxWidth: .infinity, maxHeight: .infinity) }
-            else { Label("图片无法读取，可尝试打开或导出附件", systemImage: "exclamationmark.circle") }
-            HStack { Button("打开原尺寸副本") { session.openAttachment(attachment) }; Button("导出…") { session.exportAttachment(attachment) }; Spacer() }
-        }.padding(24).frame(minWidth: 500, idealWidth: 760, minHeight: 350, idealHeight: 560).background(NotesTheme.shell)
-    }
     private func drop(_ providers: [NSItemProvider]) -> Bool {
-        var accepted = false
-        for provider in providers {
-            if provider.hasItemConformingToTypeIdentifier("public.file-url") {
-                accepted = true
-                _ = provider.loadObject(ofClass: NSURL.self) { object, error in
-                    DispatchQueue.main.async {
-                        if let error { session.reportAttachmentFailure(error.localizedDescription) }
-                        else if let url = object as? URL { session.importURLs([url]) }
-                    }
-                }
-            } else if provider.canLoadObject(ofClass: NSImage.self) {
-                accepted = true
-                _ = provider.loadObject(ofClass: NSImage.self) { object, error in DispatchQueue.main.async { if let image = object as? NSImage { session.pasteImage(image) } else if let error { session.reportAttachmentFailure(error.localizedDescription) } } }
-            }
+        guard providers.contains(where: { $0.hasItemConformingToTypeIdentifier("public.file-url") || $0.canLoadObject(ofClass: NSImage.self) }) else { return false }
+        Task { @MainActor in
+            do { session.importItems(try await NotesEditorDrop.load(providers)) }
+            catch { session.reportAttachmentFailure("拖入未完成：" + error.localizedDescription) }
         }
-        return accepted
+        return true
     }
 }

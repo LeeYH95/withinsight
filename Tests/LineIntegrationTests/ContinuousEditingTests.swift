@@ -97,7 +97,7 @@ final class ContinuousEditingTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf:reopened.url(for:restored.attachments[0])),Data("完整附件".utf8))
     }
 
-    @MainActor func testMatchingPasteKeepsHeadingListAndEmphasisWhileNormalizingSourceFont() throws {
+    @MainActor func testMatchingPasteKeepsHeadingListSemanticsWhileUsingDestinationTypography() throws {
         let view = editor([NoteBlock(text:"原文")])
         let rich = NSMutableAttributedString(string:"标题\n列表项")
         let heading = NSMutableParagraphStyle(); heading.headerLevel = 1
@@ -110,8 +110,8 @@ final class ContinuousEditingTests: XCTestCase {
         XCTAssertTrue(blocks.first?.markdown?.hasPrefix("# ") == true)
         XCTAssertTrue(blocks.last?.markdown?.hasPrefix("- ") == true)
         let font = view.attributedString().attribute(.font,at:0,effectiveRange:nil) as? NSFont
-        XCTAssertEqual(font?.pointSize ?? 0,NotesContinuousDocument.bodySize * 1.65,accuracy:0.02)
-        XCTAssertTrue(font.map{NSFontManager.shared.traits(of:$0).contains(.boldFontMask)} == true)
+        XCTAssertEqual(font?.pointSize ?? 0,NotesContinuousDocument.bodySize,accuracy:0.02)
+        XCTAssertFalse(font.map{NSFontManager.shared.traits(of:$0).contains(.boldFontMask)} == true)
     }
 
     @MainActor func testFormattingAcrossOwnedAttachmentsCannotTurnThemIntoTextOrDropReferences() throws {
