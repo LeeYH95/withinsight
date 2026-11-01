@@ -23,16 +23,28 @@ final class LineControlTests: XCTestCase {
         XCTAssertEqual(opened, 1)
     }
 
-    @MainActor func testPaperNewEntryPreservesAllTemplateActions() {
+    @MainActor func testPaperNewEntryCreatesOneUniversalNote() {
         _ = NSApplication.shared
         let line = Line(restoring: false, gusts: false)
         var created: [String] = []
         line.onNewNote = { created.append($0) }
         let menu = LineControl.templateMenu(for: line)
-        XCTAssertEqual(menu.items.map(\.title), ["文字闪念", "待办清单", "图文闪念"])
+        XCTAssertEqual(menu.items.map(\.title), ["新建闪念"])
         XCTAssertTrue(menu.items.allSatisfy { $0.image != nil }, "Each template must fill the menu's icon column")
         for item in menu.items { NotesMenuPresenter.dispatch(item) }
-        XCTAssertEqual(created, ["text", "checklist", "image"])
+        XCTAssertEqual(created, ["text"])
+    }
+
+    @MainActor func testNewPaperButtonCreatesWithoutOpeningATemplateMenu() throws {
+        _ = NSApplication.shared
+        let line = Line(restoring: false, gusts: false)
+        var created: [String] = []
+        line.onNewNote = { created.append($0) }
+        let host = NSHostingView(rootView: LineControl(line: line, isNew: true))
+        host.frame = NSRect(x: 0, y: 0, width: 40, height: LineControl.hangingHeight)
+        host.layoutSubtreeIfNeeded()
+        try XCTUnwrap(buttons(in: host).first).performClick(nil)
+        XCTAssertEqual(created, ["text"])
     }
 
     @MainActor private func buttons(in view: NSView) -> [NSButton] {

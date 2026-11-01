@@ -243,7 +243,8 @@ final class ContinuousClipboardTests: XCTestCase {
         let (target, session) = editor(try store.create(), store: store)
         target.preservePastedFormatting = true
         let board = NSPasteboard.withUniqueName(); defer { board.releaseGlobally() }
-        board.declareTypes([.rtfd], owner: nil); board.setData(rtfd, forType: .rtfd)
+        board.declareTypes([.rtfd, .png], owner: nil); board.setData(rtfd, forType: .rtfd)
+        board.setData(bytes[1], forType: .png) // Some applications also expose a preview image for the rich selection.
         XCTAssertFalse(board.types?.contains(payloadType) == true)
         XCTAssertTrue(target.readSelection(from: board)); try session.commit()
         let reopened = try XCTUnwrap(try NotesStore(directory: store.directory).document(id: session.note.id))
@@ -295,8 +296,8 @@ final class ContinuousClipboardTests: XCTestCase {
             let rich = try XCTUnwrap(session.note.blocks.first?.richText.flatMap { NSAttributedString(rtf: $0, documentAttributes: nil) })
             let font = try XCTUnwrap(rich.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)
             XCTAssertEqual(font.pointSize, preserve ? 24 : NotesContinuousDocument.bodySize, accuracy: 0.02)
-            XCTAssertTrue(NSFontManager.shared.traits(of: font).contains(.boldFontMask))
-            XCTAssertEqual(rich.attribute(.underlineStyle, at: 0, effectiveRange: nil) as? Int, 1)
+            XCTAssertEqual(NSFontManager.shared.traits(of: font).contains(.boldFontMask), preserve)
+            XCTAssertEqual(rich.attribute(.underlineStyle, at: 0, effectiveRange: nil) as? Int ?? 0, preserve ? 1 : 0)
             XCTAssertEqual(session.note.blocks.last?.kind, .checklist)
             XCTAssertEqual(session.note.blocks.last?.isChecked, true)
             XCTAssertEqual(session.note.attachments.count, 2)

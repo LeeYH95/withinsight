@@ -11,7 +11,19 @@ import UniformTypeIdentifiers
     var trailingAttributes: [NSAttributedString.Key: Any] = [:]
     var readingScale: CGFloat = 1
     var preservePastedFormatting = false
+    var clipboard: NSPasteboard = .general
     var imageProvider: (NoteAttachment) -> NSImage? = { _ in nil }
+    private var visibleImages: [UUID: NSImage] = [:]
+    func pruneVisibleImages(to references: Set<UUID>) { visibleImages = visibleImages.filter { references.contains($0.key) } }
+    @discardableResult func refreshVisibleImages(_ note: NoteDocument) -> Bool {
+        let active = Set(note.attachments.map(\.id))
+        visibleImages = visibleImages.filter { active.contains($0.key) }
+        var changed = false
+        for attachment in note.attachments where attachment.kind == .image && visibleImages[attachment.id] == nil {
+            if let image = imageProvider(attachment) { visibleImages[attachment.id] = image; changed = true }
+        }
+        return changed
+    }
     var onAttachment: ((NoteAttachment) -> Void)?
     var loading = false
     private var normalizing = false
@@ -74,7 +86,8 @@ import UniformTypeIdentifiers
         linkPastes.cancelAll()
         loading = true
         let selection = selectedRange()
-        textStorage?.setAttributedString(NotesContinuousDocument.render(note, scale:readingScale, width:max(150,bounds.width), image:imageProvider))
+        refreshVisibleImages(note)
+        textStorage?.setAttributedString(NotesContinuousDocument.render(note, scale:readingScale, width:max(150,bounds.width), image: { self.visibleImages[$0.id] }))
         let length = textStorage?.length ?? 0
         setSelectedRange(NSRange(location:min(selection.location,length), length:min(selection.length,max(0,length - min(selection.location,length)))))
         trailingAttributes = defaultAttributes()
@@ -129,7 +142,8 @@ import UniformTypeIdentifiers
     override func didChangeText() {
         if !loading, !hasMarkedText(), !normalizing, let storage = textStorage {
             normalizing = true
-            let selection = selectedRange(), typing = typingAttributes
+            let typing = typingAttributes
+            let selection = NotesListEditing.normalize(storage, selection: selectedRange())
             NotesContinuousDocument.normalizeLayout(storage, scale:readingScale)
             setSelectedRange(selection); typingAttributes = typing; cleanTypingAttributes()
             normalizing = false
@@ -139,6 +153,7 @@ import UniformTypeIdentifiers
     }
     override func insertText(_ insertString: Any, replacementRange: NSRange) {
         cleanTypingAttributes()
+        if !hasMarkedText(), let value = insertString as? String, value == " ", convertListShortcut(replacementRange: replacementRange) { return }
         if !hasMarkedText(), let value = insertString as? String, !value.isEmpty {
             let selection = replacementRange.location == NSNotFound ? selectedRange() : replacementRange
             let attrs = attributes(at:selection.location)
@@ -248,97 +263,178 @@ import UniformTypeIdentifiers
         }
         session?.endTypingGroup()
     }
+    var selectionListKind: String? { paragraphRanges().map { attributes(at: $0.location)[.notesKind] as? String ?? "paragraph" }.uniqueValue }
+    var selectionListLevel: Int? { paragraphRanges().map { attributes(at: $0.location)[.notesListLevel] as? Int ?? 0 }.uniqueValue }
     func toggleList(_ kind: String) {
-        guard !hasMarkedText(), let storage = textStorage else { return }
-        session?.captureBodySelection(selectedRange())
-        session?.endTypingGroup()
-        let ranges = paragraphRanges(), selected = selectedRange()
-        let remove = ranges.allSatisfy { attributes(at:$0.location)[.notesKind] as? String == kind }
-        var start = selected.location, end = NSMaxRange(selected)
-        var emptyAttributes: [NSAttributedString.Key: Any]?
+        guard NotesListEditing.isList(kind), !hasMarkedText(), let storage = textStorage else { return }
+        session?.captureBodySelection(selectedRange()); session?.endTypingGroup()
+        let ranges = paragraphRanges()
+        let remove = ranges.allSatisfy { attributes(at: $0.location)[.notesKind] as? String == kind }
+        var selection = selectedRange(), finalTyping: [NSAttributedString.Key: Any]?
         for range in ranges.reversed() {
-            var attrs = attributes(at:range.location)
+            var attrs = attributes(at: range.location)
             if let kind = attrs[.notesKind] as? String, kind == "image" || kind == "file" { continue }
-            let oldMarker = range.location < storage.length && attrs[.notesMarker] as? Bool == true ? min(2,range.length) : 0
-            if oldMarker > 0 { storage.deleteCharacters(in:NSRange(location:range.location,length:oldMarker)) }
-            attrs[.notesKind] = remove ? "paragraph" : kind
-            attrs[.notesChecked] = false
-            attrs.removeValue(forKey:.notesMarker); attrs.removeValue(forKey:.attachment)
-            // A converted list item is a separate paragraph even when old plain text shared a block.
+            let oldMarker = NotesListEditing.markerRange(in: storage, paragraph: range)
+            attrs[.notesKind] = remove ? "paragraph" : kind; attrs[.notesChecked] = false
             attrs[.notesBlock] = UUID().uuidString
-            let adjusted = NSRange(location:range.location,length:range.length - oldMarker)
-            if adjusted.length > 0 { storage.addAttributes(attrs,range:adjusted) }
-            let marker = remove ? NSAttributedString(string:"") : kind == "checklist" ? NotesContinuousDocument.taskMarker(checked:false,size:(attrs[.font] as? NSFont)?.pointSize ?? NotesContinuousDocument.bodySize * readingScale) : NSAttributedString(string:"•\t",attributes:[.notesMarker:true,.font:attrs[.font] ?? headingFont(0)])
-            let inserted = NSMutableAttributedString(attributedString:marker)
-            if inserted.length > 0 { inserted.addAttributes(attrs,range:NSRange(location:0,length:inserted.length)); storage.insert(inserted,at:range.location) }
-            func map(_ position:Int) -> Int { position >= range.location + oldMarker ? position - oldMarker + inserted.length : position > range.location ? range.location + inserted.length : position }
-            start = map(start); end = map(end)
-            if adjusted.length == 0, inserted.length == 0, range.location == storage.length { emptyAttributes = attrs; trailingAttributes = attrs }
+            attrs[.notesListLevel] = remove ? 0 : min(1, max(0, attrs[.notesListLevel] as? Int ?? 0))
+            attrs[.notesListNumber] = 1
+            attrs[.notesListStart] = 1; attrs[.notesListStartLevel] = attrs[.notesListLevel]
+            for key in [.notesMarker, .attachment, .notesAttachment, .notesAttachmentName] as [NSAttributedString.Key] { attrs.removeValue(forKey: key) }
+            let marker = remove ? NSMutableAttributedString(string: "") : NSMutableAttributedString(attributedString: NotesListEditing.marker(kind: kind, font: attrs[.font] as? NSFont ?? headingFont(0)))
+            var markerAttrs = attrs
+            for key in [.link, .toolTip, .notesPendingLink] as [NSAttributedString.Key] { markerAttrs.removeValue(forKey: key) }
+            marker.addAttributes(markerAttrs, range: NSRange(location: 0, length: marker.length))
+            storage.replaceCharacters(in: oldMarker, with: marker)
+            selection = NotesListEditing.map(selection, replacing: oldMarker, length: marker.length, moveStart: oldMarker.length == 0)
+            let changed = NSRange(location: range.location, length: range.length - oldMarker.length + marker.length)
+            let metadata: [NSAttributedString.Key: Any] = [.notesKind: attrs[.notesKind]!, .notesChecked: false, .notesBlock: attrs[.notesBlock]!, .notesListLevel: attrs[.notesListLevel]!, .notesListNumber: 1, .notesListStart: 1, .notesListStartLevel: attrs[.notesListLevel] ?? 0]
+            if changed.length > 0 { storage.addAttributes(metadata, range: changed) }
+            if NSMaxRange(changed) == storage.length { trailingAttributes = attrs }
+            if range.location <= selection.location { finalTyping = attrs }
         }
-        setSelectedRange(NSRange(location:min(start,storage.length),length:max(0,min(end,storage.length) - min(start,storage.length))))
-        if let emptyAttributes { typingAttributes = emptyAttributes }
-        cleanTypingAttributes(); didChangeText(); session?.endTypingGroup()
-        window?.makeFirstResponder(self)
+        setSelectedRange(selection)
+        if let finalTyping { typingAttributes = finalTyping }
+        cleanTypingAttributes(); didChangeText(); session?.endTypingGroup(); window?.makeFirstResponder(self)
+    }
+    /// Space commits the shortcut as the same edit, before a transient literal
+    /// prefix can enter the session history or trigger link-title work.
+    private func convertListShortcut(replacementRange: NSRange) -> Bool {
+        let selection = replacementRange.location == NSNotFound ? selectedRange() : replacementRange
+        guard selection.length == 0, let storage = textStorage, selection.location <= storage.length else { return false }
+        let paragraph = (string as NSString).paragraphRange(for: selection)
+        let attrs = attributes(at: paragraph.location)
+        guard (attrs[.notesKind] as? String ?? "paragraph") == "paragraph", (attrs[.notesHeading] as? Int ?? 0) == 0 else { return false }
+        let prefix = NSRange(location: paragraph.location, length: selection.location - paragraph.location)
+        guard let list = NotesListEditing.shortcut((string as NSString).substring(with: prefix) + " ") else { return false }
+        var next = attrs
+        next[.notesKind] = list.kind; next[.notesListLevel] = list.level; next[.notesListNumber] = list.number
+        next[.notesListStart] = list.number; next[.notesListStartLevel] = list.level
+        next[.notesBlock] = UUID().uuidString; next[.notesChecked] = false
+        for key in [.attachment, .notesMarker, .link, .toolTip, .notesPendingLink] as [NSAttributedString.Key] { next.removeValue(forKey: key) }
+        let marker = NSMutableAttributedString(attributedString: NotesListEditing.marker(kind: list.kind, number: list.number, font: next[.font] as? NSFont ?? headingFont(0)))
+        marker.addAttributes(next, range: NSRange(location: 0, length: marker.length))
+        guard shouldChangeText(in: prefix, replacementString: marker.string) else { return false }
+        session?.endTypingGroup()
+        storage.replaceCharacters(in: prefix, with: marker)
+        let updated = (storage.string as NSString).paragraphRange(for: NSRange(location: paragraph.location, length: 0))
+        storage.addAttributes([.notesKind: list.kind, .notesListLevel: list.level, .notesListNumber: list.number, .notesListStart: list.number, .notesListStartLevel: list.level, .notesBlock: next[.notesBlock]!, .notesChecked: false], range: updated)
+        setSelectedRange(NSRange(location: paragraph.location + marker.length, length: 0)); typingAttributes = next
+        if NSMaxRange(updated) == storage.length { trailingAttributes = next }
+        didChangeText(); session?.endTypingGroup(); return true
+    }
+    func changeListIndent(_ delta: Int) {
+        guard !hasMarkedText(), let storage = textStorage else { return }
+        let ranges = paragraphRanges().filter { NotesListEditing.isList(attributes(at: $0.location)[.notesKind] as? String) }
+        guard !ranges.isEmpty else { return }
+        session?.captureBodySelection(selectedRange()); session?.endTypingGroup()
+        let selection = selectedRange()
+        for range in ranges {
+            let old = attributes(at: range.location)[.notesListLevel] as? Int ?? 0
+            let level = min(1, max(0, old + delta))
+            guard level != old else { continue }
+            if range.length > 0 { storage.addAttributes([.notesListLevel: level, .notesListNumber: 1, .notesListStart: 1, .notesListStartLevel: level], range: range) }
+            if NSMaxRange(range) == storage.length { trailingAttributes[.notesListLevel] = level }
+        }
+        setSelectedRange(selection)
+        var typing = typingAttributes
+        typing[.notesListLevel] = attributes(at: selection.location)[.notesListLevel] as? Int ?? 0
+        typingAttributes = typing
+        didChangeText(); session?.endTypingGroup()
+    }
+    override func insertTab(_ sender: Any?) {
+        if !hasMarkedText(), paragraphRanges().contains(where: { NotesListEditing.isList(attributes(at: $0.location)[.notesKind] as? String) }) { changeListIndent(1) }
+        else { super.insertTab(sender) }
+    }
+    override func insertBacktab(_ sender: Any?) {
+        if !hasMarkedText(), paragraphRanges().contains(where: { NotesListEditing.isList(attributes(at: $0.location)[.notesKind] as? String) }) { changeListIndent(-1) }
+        else { super.insertBacktab(sender) }
     }
     override func insertNewline(_ sender: Any?) {
         guard !hasMarkedText(), let storage = textStorage else { super.insertNewline(sender); return }
-        let selection = selectedRange(), ranges = paragraphRanges()
-        guard let range = ranges.first else { return }
-        var attrs = attributes(at:range.location)
-        let kind = attrs[.notesKind] as? String ?? "paragraph"
-        if kind == "checklist" || kind == "bullet", range.length <= 2 || range.length == 3 && (string as NSString).substring(with:NSRange(location:NSMaxRange(range) - 1,length:1)) == "\n" {
-            toggleList(kind); return
+        var selection = selectedRange()
+        guard let range = paragraphRanges().first else { return }
+        var attrs = attributes(at: range.location)
+        let kind = attrs[.notesKind] as? String ?? "paragraph", list = NotesListEditing.isList(kind)
+        let marker = NotesListEditing.markerRange(in: storage, paragraph: range)
+        let bodyEnd = NSMaxRange(range) - ((string as NSString).substring(with: range).hasSuffix("\n") ? 1 : 0)
+        if list, bodyEnd <= NSMaxRange(marker) {
+            if (attrs[.notesListLevel] as? Int ?? 0) > 0 { changeListIndent(-1) }
+            else { toggleList(kind) }
+            return
         }
+        if list, selection.length == 0, selection.location < NSMaxRange(marker) { selection.location = NSMaxRange(marker) }
         attrs[.notesBlock] = UUID().uuidString; attrs[.notesChecked] = false
-        attrs.removeValue(forKey:.attachment); attrs.removeValue(forKey:.notesMarker)
-        for key in [.link, .toolTip, .notesPendingLink] as [NSAttributedString.Key] { attrs.removeValue(forKey: key) }
-        if kind == "image" || kind == "file" || (attrs[.notesHeading] as? Int ?? 0) > 0 && selection.location >= NSMaxRange(range) - (string as NSString).substring(with:range).hasSuffix("\n").intValue {
-            attrs = defaultAttributes()
+        for key in [.attachment, .notesMarker, .link, .toolTip, .notesPendingLink] as [NSAttributedString.Key] { attrs.removeValue(forKey: key) }
+        if kind == "image" || kind == "file" || (attrs[.notesHeading] as? Int ?? 0) > 0 && selection.location >= bodyEnd { attrs = defaultAttributes() }
+        var newlineAttrs = attributes(at: max(range.location, selection.location - 1))
+        for key in [.notesMarker, .attachment, .link, .toolTip, .notesPendingLink] as [NSAttributedString.Key] { newlineAttrs.removeValue(forKey: key) }
+        let next = NSMutableAttributedString(string: "\n", attributes: newlineAttrs)
+        if list {
+            let marker = NSMutableAttributedString(attributedString: NotesListEditing.marker(kind: kind, number: attrs[.notesListNumber] as? Int ?? 1, font: attrs[.font] as? NSFont ?? headingFont(0)))
+            marker.addAttributes(attrs, range: NSRange(location: 0, length: marker.length)); next.append(marker)
         }
-        var newlineAttrs = attributes(at:max(range.location,selection.location - 1))
-        newlineAttrs.removeValue(forKey:.notesMarker); newlineAttrs.removeValue(forKey:.attachment)
-        for key in [.link, .toolTip, .notesPendingLink] as [NSAttributedString.Key] { newlineAttrs.removeValue(forKey: key) }
-        let next = NSMutableAttributedString(string:"\n",attributes:newlineAttrs)
-        if kind == "checklist" || kind == "bullet" {
-            let marker = kind == "checklist" ? NotesContinuousDocument.taskMarker(checked:false,size:(attrs[.font] as? NSFont)?.pointSize ?? NotesContinuousDocument.bodySize * readingScale) : NSAttributedString(string:"•\t",attributes:[.notesMarker:true,.font:attrs[.font] ?? headingFont(0)])
-            let value = NSMutableAttributedString(attributedString:marker); value.addAttributes(attrs,range:NSRange(location:0,length:value.length)); next.append(value)
-        }
-        guard shouldChangeText(in:selection,replacementString:next.string) else { return }
-        storage.replaceCharacters(in:selection,with:next)
+        guard shouldChangeText(in: selection, replacementString: next.string) else { return }
+        storage.replaceCharacters(in: selection, with: next)
         let caret = selection.location + next.length
-        // A split paragraph gets its own identity and semantic type, including existing trailing text.
         if caret < storage.length {
-            let tail = (storage.string as NSString).paragraphRange(for:NSRange(location:caret,length:0))
-            storage.addAttributes(attrs,range:tail)
+            let tail = (storage.string as NSString).paragraphRange(for: NSRange(location: caret, length: 0))
+            storage.addAttributes([.notesKind: attrs[.notesKind] ?? "paragraph", .notesBlock: attrs[.notesBlock]!, .notesChecked: false, .notesHeading: attrs[.notesHeading] ?? 0, .notesListLevel: attrs[.notesListLevel] ?? 0, .notesListNumber: attrs[.notesListNumber] ?? 1], range: tail)
         }
         if caret == storage.length { trailingAttributes = attrs }
-        setSelectedRange(NSRange(location:caret,length:0)); typingAttributes = attrs
+        setSelectedRange(NSRange(location: caret, length: 0)); typingAttributes = attrs
         didChangeText(); scrollRangeToVisible(selectedRange())
     }
     override func deleteBackward(_ sender: Any?) {
-        guard !hasMarkedText(), selectedRange().length == 0, let range = paragraphRanges().first else { super.deleteBackward(sender); return }
-        let attrs = attributes(at:range.location), kind = attrs[.notesKind] as? String
-        if (kind == "checklist" || kind == "bullet"), selectedRange().location <= range.location + 2 { toggleList(kind!); return }
+        guard !hasMarkedText(), selectedRange().length == 0, let range = paragraphRanges().first, let storage = textStorage else { super.deleteBackward(sender); return }
+        let attrs = attributes(at: range.location), kind = attrs[.notesKind] as? String
+        if NotesListEditing.isList(kind), selectedRange().location <= NSMaxRange(NotesListEditing.markerRange(in: storage, paragraph: range)) {
+            if (attrs[.notesListLevel] as? Int ?? 0) > 0 { changeListIndent(-1) }
+            else { toggleList(kind!) }
+            return
+        }
         super.deleteBackward(sender)
     }
+    private func paragraphDelimited(_ fragment: NSAttributedString, at selection: NSRange) -> NSAttributedString {
+        guard fragment.length > 0 else { return fragment }
+        var structural = false
+        fragment.enumerateAttribute(.notesKind, in: NSRange(location: 0, length: fragment.length)) { value, _, _ in
+            let kind = value as? String
+            if NotesListEditing.isList(kind) || kind == "image" || kind == "file" { structural = true }
+        }
+        guard structural else { return fragment }
+        let result = NSMutableAttributedString(attributedString: fragment), original = string as NSString
+        func separator(_ source: [NSAttributedString.Key: Any]) -> NSAttributedString {
+            var attrs = source
+            for key in [.attachment, .notesMarker, .notesAttachment, .notesAttachmentName, .link, .toolTip, .notesPendingLink] as [NSAttributedString.Key] { attrs.removeValue(forKey: key) }
+            return NSAttributedString(string: "\n", attributes: attrs)
+        }
+        if selection.location > 0, original.character(at: selection.location - 1) != 10, !fragment.string.hasPrefix("\n") {
+            result.insert(separator(attributes(at: selection.location - 1)), at: 0)
+        }
+        if NSMaxRange(selection) < original.length, original.character(at: NSMaxRange(selection)) != 10, !fragment.string.hasSuffix("\n") {
+            result.append(separator(fragment.attributes(at: fragment.length - 1, effectiveRange: nil)))
+        }
+        return result
+    }
     @discardableResult func insertPasted(_ value: NSAttributedString) -> Bool {
+        cleanTypingAttributes()
+        let target = typingAttributes
+        let targetFont = target[.font] as? NSFont ?? headingFont(0)
         let safe = NSMutableAttributedString(attributedString:value)
         NotesContinuousDocument.sanitizeLinks(in: safe)
         let source = NSAttributedString(attributedString:safe)
         source.enumerateAttributes(in:NSRange(location:0,length:source.length)) { attrs,range,_ in
-            for key in [.notesBlock,.notesKind,.notesHeading,.notesChecked,.notesMarker,.notesAttachment,.notesAttachmentName] as [NSAttributedString.Key] { safe.removeAttribute(key,range:range) }
+            for key in [.notesBlock,.notesKind,.notesHeading,.notesChecked,.notesMarker,.notesAttachment,.notesAttachmentName,.notesListLevel,.notesListNumber,.notesListStart,.notesListStartLevel] as [NSAttributedString.Key] { safe.removeAttribute(key,range:range) }
             let original = attrs[.font] as? NSFont ?? NSFont.systemFont(ofSize:NotesContinuousDocument.bodySize)
-            let heading = min(2,max(0,(attrs[.paragraphStyle] as? NSParagraphStyle)?.headerLevel ?? 0))
-            var font: NSFont
-            if preservePastedFormatting { font = NSFontManager.shared.convert(original,toSize:original.pointSize * readingScale) }
-            else {
-                font = headingFont(heading)
-                let traits = NSFontManager.shared.traits(of:original)
-                if traits.contains(.boldFontMask) { font = NSFontManager.shared.convert(font,toHaveTrait:.boldFontMask) }
-                if traits.contains(.italicFontMask) { font = NSFontManager.shared.convert(font,toHaveTrait:.italicFontMask) }
+            let font = preservePastedFormatting ? NSFontManager.shared.convert(original, toSize: original.pointSize * readingScale) : targetFont
+            safe.addAttributes([.font:font,.foregroundColor:target[.foregroundColor] ?? NSColor(NotesTheme.text)],range:range)
+            if !preservePastedFormatting {
+                for key in [.backgroundColor, .shadow, .strokeColor, .strokeWidth, .baselineOffset, .underlineStyle, .strikethroughStyle] as [NSAttributedString.Key] {
+                    safe.removeAttribute(key, range: range)
+                    if let value = target[key], key == .underlineStyle || key == .strikethroughStyle { safe.addAttribute(key, value: value, range: range) }
+                }
             }
-            if !preservePastedFormatting { font = NSFontManager.shared.convert(font,toSize:NotesContinuousDocument.bodySize * (heading == 1 ? 1.65 : heading == 2 ? 1.28 : 1) * readingScale) }
-            safe.addAttributes([.font:font,.foregroundColor:NSColor(NotesTheme.text)],range:range)
         }
         let ns = source.string as NSString
         var paragraphs:[NSRange] = [], cursor = 0
@@ -347,13 +443,21 @@ import UniformTypeIdentifiers
             let style = source.attribute(.paragraphStyle,at:range.location,effectiveRange:nil) as? NSParagraphStyle
             let heading = min(2,max(0,style?.headerLevel ?? 0))
             let text = ns.substring(with:range)
-            let bullet = style?.textLists.isEmpty == false || text.hasPrefix("• ") || text.hasPrefix("•\t") || text.hasPrefix("\t•\t")
-            let attrs:[NSAttributedString.Key:Any] = [.notesBlock:UUID().uuidString,.notesKind:bullet ? "bullet" : "paragraph",.notesHeading:heading,.notesChecked:false]
+            let textList = style?.textLists.last
+            let trimmed = text.hasPrefix("\t") ? String(text.dropFirst()) : text
+            let literalOrdered = NotesListEditing.orderedPrefix(trimmed)
+            let literalBullet = text.hasPrefix("• ") || text.hasPrefix("•\t") || text.hasPrefix("\t•\t")
+            let listKind: String? = textList.map { $0.markerFormat == .decimal ? "ordered" : "bullet" } ?? (literalOrdered != nil ? "ordered" : literalBullet ? "bullet" : nil)
+            let sourceFont = source.attribute(.font, at: range.location, effectiveRange: nil) as? NSFont
+            let level = textList != nil ? min(1, max(0, (style?.textLists.count ?? 0) - 1)) : ((style?.firstLineHeadIndent ?? 0) >= (sourceFont?.pointSize ?? 15) ? 1 : 0)
+            let ordered = listKind == "ordered" ? literalOrdered : nil
+            let number = ordered?.number ?? textList?.startingItemNumber ?? 1
+            let attrs:[NSAttributedString.Key:Any] = [.notesBlock:UUID().uuidString,.notesKind:listKind ?? "paragraph",.notesHeading:heading,.notesChecked:false,.notesListLevel:level,.notesListNumber:number]
             safe.addAttributes(attrs,range:range)
-            if bullet {
-                let prefix = text.hasPrefix("\t•\t") ? 3 : text.hasPrefix("• ") || text.hasPrefix("•\t") ? 2 : 0
+            if let listKind {
+                let prefix = listKind == "ordered" ? (ordered?.length ?? 0) + (ordered != nil && text.hasPrefix("\t") ? 1 : 0) : text.hasPrefix("\t•\t") ? 3 : text.hasPrefix("• ") || text.hasPrefix("•\t") ? 2 : 0
                 if prefix > 0 { safe.deleteCharacters(in:NSRange(location:range.location,length:prefix)) }
-                let marker = NSMutableAttributedString(string:"•\t",attributes:[.notesMarker:true,.font:headingFont(0)])
+                let marker = NSMutableAttributedString(attributedString: NotesListEditing.marker(kind:listKind,number:number,font:headingFont(0)))
                 marker.addAttributes(attrs,range:NSRange(location:0,length:marker.length)); safe.insert(marker,at:range.location)
             }
         }
@@ -386,8 +490,9 @@ import UniformTypeIdentifiers
         NotesContinuousDocument.normalizeLayout(safe,scale:readingScale)
         let selection = selectedRange()
         guard shouldChangeText(in:selection,replacementString:safe.string) else { return false }
-        textStorage?.replaceCharacters(in:selection,with:safe)
-        setSelectedRange(NSRange(location:selection.location + safe.length,length:0))
+        let fragment = paragraphDelimited(safe, at: selection)
+        textStorage?.replaceCharacters(in:selection,with:fragment)
+        setSelectedRange(NSRange(location:selection.location + fragment.length,length:0))
         cleanTypingAttributes(); didChangeText()
         return true
     }
@@ -402,6 +507,7 @@ import UniformTypeIdentifiers
     private struct ClipboardBlock: Codable {
         var kind: NoteBlock.Kind; var text: String; var heading: Int; var bullet: Bool
         var checked: Bool; var attachment: UUID?; var styles: [ClipboardStyle]
+        var listKind: String? = nil; var listLevel: Int? = nil; var listNumber: Int? = nil
     }
     private struct ClipboardAsset: Codable {
         var id: UUID; var name: String; var kind: NoteAttachment.Kind; var bytes: Data; var digest: String
@@ -432,7 +538,8 @@ import UniformTypeIdentifiers
                     styles.append(ClipboardStyle(location: range.location, length: range.length, size: Double(font.pointSize), fontName: font.fontName, bold: traits.contains(.boldFontMask), italic: traits.contains(.italicFontMask), underline: attrs[.underlineStyle] as? Int ?? 0, strike: attrs[.strikethroughStyle] as? Int ?? 0, link: NotesWebLink.destination(from: attrs[.link])?.absoluteString))
                 }
             }
-            return ClipboardBlock(kind: block.kind, text: block.text, heading: block.markdown?.hasPrefix("# ") == true ? 1 : block.markdown?.hasPrefix("## ") == true ? 2 : 0, bullet: block.kind == .paragraph && block.markdown?.hasPrefix("- ") == true, checked: block.isChecked, attachment: block.attachmentID, styles: styles)
+            let list = NotesListEditing.descriptor(block)
+            return ClipboardBlock(kind: block.kind, text: block.text, heading: block.markdown?.hasPrefix("# ") == true ? 1 : block.markdown?.hasPrefix("## ") == true ? 2 : 0, bullet: list?.kind == "bullet", checked: block.isChecked, attachment: block.attachmentID, styles: styles, listKind: list?.kind, listLevel: list?.level, listNumber: list?.number)
         }
     }
     private func clipboardSelection() throws -> ClipboardSelection {
@@ -480,12 +587,21 @@ import UniformTypeIdentifiers
             board.declareTypes([Self.ownedSelectionType, .rtfd, .string], owner: nil)
             guard board.setData(data, forType: Self.ownedSelectionType) else { throw ClipboardError.unavailable }
             _ = board.setData(external, forType: .rtfd)
-            _ = board.setString(payload.blocks.map { block in block.kind == .checklist ? "\(block.checked ? "☑" : "☐") \(block.text)" : block.text }.joined(separator: "\n"), forType: .string)
+            if payload.blocks.count == 1, let block = payload.blocks.first, block.kind == .image,
+               let id = block.attachment, let asset = payload.assets.first(where: { $0.id == id }) {
+                _ = NotesEditorPasteboard.writeImage(asset.bytes, to: board)
+            }
+            _ = board.setString(payload.blocks.map { block in
+                let indent = (block.listLevel ?? 0) > 0 ? "  " : ""
+                if block.kind == .checklist { return indent + "\(block.checked ? "☑" : "☐") \(block.text)" }
+                if block.listKind == "ordered" { return indent + "\(block.listNumber ?? 1). " + block.text }
+                return indent + block.text
+            }.joined(separator: "\n"), forType: .string)
             return true
         } catch { session?.reportAttachmentFailure("复制未完成：" + error.localizedDescription); return false }
     }
-    override func copy(_ sender: Any?) { _ = writeSelection(to: .general, types: writablePasteboardTypes) }
-    override func cut(_ sender: Any?) { _ = cut(to: .general) }
+    override func copy(_ sender: Any?) { _ = writeSelection(to: clipboard, types: writablePasteboardTypes) }
+    override func cut(_ sender: Any?) { _ = cut(to: clipboard) }
     @discardableResult func cut(to board: NSPasteboard) -> Bool {
         let selection = selectedRange()
         guard !hasMarkedText(), selection.length > 0, shouldChangeText(in: selection, replacementString: "") else { return false }
@@ -510,7 +626,14 @@ import UniformTypeIdentifiers
             guard inferred == (asset.kind == .image), asset.kind != .image || NSImage(data: asset.bytes) != nil else { throw ClipboardError.invalid }
         }
         for block in payload.blocks {
-            guard (0...2).contains(block.heading), block.text.utf16.count <= Self.clipboardLimit else { throw ClipboardError.invalid }
+            guard (0...2).contains(block.heading), block.text.utf16.count <= Self.clipboardLimit,
+                  block.listLevel == nil || (0...1).contains(block.listLevel!),
+                  block.listNumber == nil || block.listNumber! > 0 && block.listNumber! < Int.max,
+                  block.listKind == nil || NotesListEditing.isList(block.listKind) else { throw ClipboardError.invalid }
+            if let kind = block.listKind {
+                guard block.kind == .paragraph || block.kind == .checklist,
+                      (kind == "checklist") == (block.kind == .checklist) else { throw ClipboardError.invalid }
+            }
             if block.kind == .image || block.kind == .file {
                 guard let id = block.attachment, let asset = payload.assets.first(where: { $0.id == id }), (block.kind == .image) == (asset.kind == .image) else { throw ClipboardError.invalid }
                 referenced.insert(id)
@@ -533,6 +656,10 @@ import UniformTypeIdentifiers
             guard !hasMarkedText() else { throw ClipboardError.invalid }
             try validate(payload)
             guard let session else { throw ClipboardError.unavailable }
+            cleanTypingAttributes()
+            let target = typingAttributes
+            let targetFont = target[.font] as? NSFont ?? headingFont(0)
+            let unscaledTarget = NSFontManager.shared.convert(targetFont, toSize: targetFont.pointSize / readingScale)
             let original = NSMutableAttributedString(attributedString: attributedString()), selection = selectedRange()
             guard shouldChangeText(in: selection, replacementString: payload.blocks.map(\.text).joined(separator: "\n")) else { return false }
             let folder = FileManager.default.temporaryDirectory.appendingPathComponent("Shipian-clipboard-" + UUID().uuidString, isDirectory: true)
@@ -557,30 +684,35 @@ import UniformTypeIdentifiers
             for (asset, attachment) in zip(payload.assets, additions) { replacements[asset.id] = attachment }
             let blocks = try payload.blocks.map { value -> NoteBlock in
                 if let assetID = value.attachment, let attachment = replacements[assetID] { return NoteBlock(kind: value.kind, text: attachment.name, attachmentID: attachment.id) }
-                let rich = NSMutableAttributedString(string: value.text, attributes: [.font: NSFont.systemFont(ofSize: NotesContinuousDocument.bodySize * (value.heading == 1 ? 1.65 : value.heading == 2 ? 1.28 : 1))])
+                let rich = NSMutableAttributedString(string: value.text, attributes: [.font: preservePastedFormatting ? NSFont.systemFont(ofSize: NotesContinuousDocument.bodySize * (value.heading == 1 ? 1.65 : value.heading == 2 ? 1.28 : 1)) : unscaledTarget])
                 for style in value.styles {
-                    let size = preservePastedFormatting ? style.size : NotesContinuousDocument.bodySize * (value.heading == 1 ? 1.65 : value.heading == 2 ? 1.28 : 1)
-                    var font = preservePastedFormatting ? (NSFont(name: style.fontName, size: size) ?? NSFont.systemFont(ofSize: size)) : NSFont.systemFont(ofSize: size)
-                    if style.bold { font = NSFontManager.shared.convert(font, toHaveTrait: .boldFontMask) }
-                    if style.italic { font = NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask) }
+                    let size = preservePastedFormatting ? style.size : unscaledTarget.pointSize
+                    var font = preservePastedFormatting ? (NSFont(name: style.fontName, size: size) ?? NSFont.systemFont(ofSize: size)) : unscaledTarget
+                    if preservePastedFormatting && style.bold { font = NSFontManager.shared.convert(font, toHaveTrait: .boldFontMask) }
+                    if preservePastedFormatting && style.italic { font = NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask) }
                     let range = NSRange(location: style.location, length: style.length)
-                    rich.addAttributes([.font: font, .underlineStyle: style.underline, .strikethroughStyle: style.strike], range: range)
+                    rich.addAttributes([.font: font, .underlineStyle: preservePastedFormatting ? style.underline : (target[.underlineStyle] as? Int ?? 0), .strikethroughStyle: preservePastedFormatting ? style.strike : (target[.strikethroughStyle] as? Int ?? 0)], range: range)
                     if let url = NotesWebLink.destination(from: style.link) { rich.addAttribute(.link, value: url, range: range) }
                     else { rich.removeAttribute(.link, range: range) }
                 }
                 let rtf = try rich.data(from: NSRange(location: 0, length: rich.length), documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf])
-                let markdown = value.heading == 1 ? "# " + value.text : value.heading == 2 ? "## " + value.text : value.bullet ? "- " + value.text : value.text
+                var markdown = value.heading == 1 ? "# " + value.text : value.heading == 2 ? "## " + value.text : value.text
+                if let kind = value.listKind ?? (value.bullet ? "bullet" : nil), kind != "checklist" || (value.listLevel ?? 0) > 0 {
+                    let body = kind == "bullet" && value.text.hasPrefix("• ") ? String(value.text.dropFirst(2)) : value.text
+                    markdown = NotesListEditing.markdownPrefix(.init(kind: kind, level: value.listLevel ?? 0, number: value.listNumber ?? 1), checked: value.checked) + body
+                }
                 return NoteBlock(kind: value.kind, text: value.text, richText: rtf, markdown: markdown, isChecked: value.checked)
             }
-            let fragment = NotesContinuousDocument.render(NoteDocument(blocks: blocks, attachments: additions), scale: readingScale, width: max(150, bounds.width), image: { attachment in (try? session.localURL(for: attachment)).flatMap(NSImage.init(contentsOf:)) })
+            let fragment = paragraphDelimited(NotesContinuousDocument.render(NoteDocument(blocks: blocks, attachments: additions), scale: readingScale, width: max(150, bounds.width), image: { attachment in (try? session.localURL(for: attachment)).flatMap(NSImage.init(contentsOf:)) }), at: selection)
             original.replaceCharacters(in: selection, with: fragment)
+            let pastedSelection = NotesListEditing.normalize(original, selection: NSRange(location: selection.location + fragment.length, length: 0))
             let result = try NotesContinuousDocument.blocks(from: original, scale: readingScale, trailingAttributes: trailingAttributes)
             session.change("粘贴闪念内容") { note in
                 let references = Set(result.compactMap(\.attachmentID))
                 note.blocks = result; note.attachments.removeAll { !references.contains($0.id) }
             }
             loadDocument(session.note)
-            setSelectedRange(NSRange(location: min(selection.location + fragment.length, string.utf16.count), length: 0)); cleanTypingAttributes(); onLayout?()
+            setSelectedRange(NSRange(location: min(pastedSelection.location, string.utf16.count), length: 0)); cleanTypingAttributes(); onLayout?()
             rollback = nil
             return true
         } catch {
@@ -605,11 +737,54 @@ import UniformTypeIdentifiers
         if board.types?.contains(Self.ownedSelectionType) == true { return readSelection(from: board) }
         return paste(from: board)
     }
-    override func paste(_ sender: Any?) { _ = readSelection(from: .general) }
+    override func paste(_ sender: Any?) { _ = readSelection(from: clipboard) }
+    private func handleControlClipboard(_ event: NSEvent) -> Bool {
+        guard !hasMarkedText(), event.modifierFlags.intersection([.command, .control, .option]) == .control else { return false }
+        switch event.charactersIgnoringModifiers?.lowercased() {
+        case "c": copy(nil); return true
+        case "v": paste(nil); return true
+        default: return false
+        }
+    }
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if handleControlClipboard(event) { return true }
+        return super.performKeyEquivalent(with: event)
+    }
+    override func keyDown(with event: NSEvent) {
+        if !handleControlClipboard(event) { super.keyDown(with: event) }
+    }
+    /// The native destination owns the insertion point, so dragging from the
+    /// rope copies into the place under the pointer rather than a stale caret.
+    @discardableResult func importDroppedContent(from board: NSPasteboard, at point: NSPoint) -> Bool {
+        guard !hasMarkedText() else { return false }
+        let entries = NotesEditorPasteboard.imports(from: board)
+        guard !entries.isEmpty, let session else { return false }
+        let location = min(string.utf16.count, characterIndexForInsertion(at: point))
+        setSelectedRange(NSRange(location: location, length: 0))
+        window?.makeFirstResponder(self)
+        session.importItems(entries)
+        return true
+    }
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        if sender.draggingPasteboard.canReadObject(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) || sender.draggingPasteboard.types?.contains(where: { $0 == .png || $0 == .tiff }) == true { return .copy }
+        return super.draggingEntered(sender)
+    }
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        if importDroppedContent(from: sender.draggingPasteboard, at: convert(sender.draggingLocation, from: nil)) { return true }
+        return super.performDragOperation(sender)
+    }
     private func paste(from board: NSPasteboard) -> Bool {
-        if let urls = board.readObjects(forClasses:[NSURL.self],options:[.urlReadingFileURLsOnly:true]) as? [URL], !urls.isEmpty { session?.importURLs(urls); return true }
         var rich: NSAttributedString?
         if let data = board.data(forType:.rtfd) { rich = NSAttributedString(rtfd:data,documentAttributes:nil) }
+        if let rich {
+            var hasOwnedImage = false
+            rich.enumerateAttribute(.attachment, in: NSRange(location: 0, length: rich.length)) { value, _, _ in
+                if let wrapper = (value as? NSTextAttachment)?.fileWrapper, wrapper.isRegularFile { hasOwnedImage = true }
+            }
+            if hasOwnedImage { return insertPasted(rich) }
+        }
+        let entries = NotesEditorPasteboard.imports(from: board)
+        if !entries.isEmpty, let session { session.importItems(entries); return true }
         if rich == nil, let data = board.data(forType:.rtf) { rich = NSAttributedString(rtf:data,documentAttributes:nil) }
         if rich == nil, let data = board.data(forType:.html) { rich = NSAttributedString(html:data,documentAttributes:nil) }
         if let rich, rich.length > 0 {
@@ -634,7 +809,10 @@ import UniformTypeIdentifiers
                 session?.captureBodySelection(selectedRange())
                 session?.endTypingGroup(); storage.addAttribute(.notesChecked,value:!(attrs[.notesChecked] as? Bool ?? false),range:range); didChangeText(); session?.endTypingGroup(); return
             }
-            if let id = (attrs[.notesAttachment] as? String).flatMap(UUID.init(uuidString:)), let attachment = session?.note.attachments.first(where:{$0.id == id}) { onAttachment?(attachment); return }
+            if let id = (attrs[.notesAttachment] as? String).flatMap(UUID.init(uuidString:)), let attachment = session?.note.attachments.first(where:{$0.id == id}) {
+                setSelectedRange(NSRange(location: location, length: 1))
+                onAttachment?(attachment); return
+            }
         }
         super.mouseDown(with:event)
     }
@@ -650,6 +828,7 @@ import UniformTypeIdentifiers
         if let location = character(at:event), let id = (attributes(at:location)[.notesAttachment] as? String).flatMap(UUID.init(uuidString:)), let attachment = session?.note.attachments.first(where:{$0.id == id}), let session {
             let menu = NSMenu()
             menu.addItem(ClosureMenuItem(attachment.kind == .image ? "放大图片" : "打开附件") { [weak self] in self?.onAttachment?(attachment) }.notesSymbol(attachment.kind == .image ? "photo" : "arrow.up.forward.app"))
+            if attachment.kind == .image { menu.addItem(ClosureMenuItem("复制图片") { session.copyAttachment(attachment) }.notesSymbol("doc.on.doc")) }
             menu.addItem(ClosureMenuItem("导出附件…") { session.exportAttachment(attachment) }.notesSymbol("square.and.arrow.up"))
             menu.addItem(.separator()); let remove = ClosureMenuItem("移除附件") { session.removeAttachment(attachment) }.notesSymbol("trash"); remove.notesDestructive = true; menu.addItem(remove)
             NotesMenuPresenter.shared.show(menu,from:self,at:convert(event.locationInWindow,from:nil)); return
@@ -683,88 +862,3 @@ import UniformTypeIdentifiers
 }
 private extension Bool { var intValue:Int { self ? 1 : 0 } }
 private extension Array where Element: Equatable { var uniqueValue:Element? { guard let first, allSatisfy({$0 == first}) else { return nil }; return first } }
-
-struct NotesContinuousBody: NSViewRepresentable {
-    @ObservedObject var session:NotesEditorSession
-    let scale:CGFloat
-    var onHeight:(CGFloat)->Void
-    var onAttachment:(NoteAttachment)->Void
-    func makeCoordinator() -> Coordinator { Coordinator(self) }
-    func makeNSView(context:Context) -> NotesContinuousTextView {
-        let view = NotesContinuousTextView(frame:NSRect(x:0,y:0,width:500,height:100),textContainer:nil)
-        view.session = session; session.textView = view; view.readingScale = scale
-        view.preservePastedFormatting = UserDefaults.standard.string(forKey:"notesPasteMode") == "preserve"
-        view.delegate = context.coordinator
-        view.imageProvider = { [weak session] attachment in guard let session, let url = try? session.localURL(for:attachment) else { return nil }; return NotesImageCache.shared.image(at:url) }
-        view.onAttachment = onAttachment
-        view.publish = { [weak coordinator = context.coordinator] in coordinator?.publish() }
-        view.onLayout = { [weak coordinator = context.coordinator] in coordinator?.measure() }
-        context.coordinator.view = view; context.coordinator.load(); return view
-    }
-    func updateNSView(_ view:NotesContinuousTextView, context:Context) {
-        context.coordinator.parent = self
-        view.onAttachment = onAttachment
-        view.preservePastedFormatting = UserDefaults.standard.string(forKey:"notesPasteMode") == "preserve"
-        if !view.hasMarkedText(), context.coordinator.lastBlocks != session.note.blocks || view.readingScale != scale || context.coordinator.imageRevision != NotesImageCache.shared.revision || session.bodySelectionToRestore != nil {
-            view.readingScale = scale; context.coordinator.load()
-        }
-        context.coordinator.measure()
-    }
-    func sizeThatFits(_ proposal:ProposedViewSize,nsView:NotesContinuousTextView,context:Context)->CGSize? {
-        let width = max(100,proposal.width ?? 500)
-        nsView.textContainer?.containerSize = NSSize(width:width,height:.greatestFiniteMagnitude)
-        guard let container = nsView.textContainer, let manager = nsView.layoutManager else { return CGSize(width:width,height:100) }
-        manager.ensureLayout(for:container)
-        return CGSize(width:width,height:max(proposal.height ?? 100,manager.usedRect(for:container).height + 16))
-    }
-    @MainActor final class Coordinator:NSObject,NSTextViewDelegate {
-        var parent:NotesContinuousBody
-        weak var view:NotesContinuousTextView?
-        var lastBlocks:[NoteBlock] = []
-        var imageRevision = 0
-        private var measured:CGFloat = 0
-        init(_ parent:NotesContinuousBody) { self.parent = parent }
-        func load() {
-            guard let view, !view.hasMarkedText() else { return }
-            lastBlocks = parent.session.note.blocks; imageRevision = NotesImageCache.shared.revision
-            view.loadDocument(parent.session.note)
-            // Import puts the caret in the new paragraph after the attachment.
-            if let focused = parent.session.focusedBlock, focused != view.blockID {
-                view.textStorage?.enumerateAttribute(.notesBlock,in:NSRange(location:0,length:view.textStorage?.length ?? 0)) { id,range,stop in
-                    if id as? String == focused.uuidString { view.setSelectedRange(NSRange(location:range.location,length:0)); view.blockID = focused; stop.pointee = true }
-                }
-            }
-            if let selection = parent.session.consumeBodySelection() {
-                let length = view.textStorage?.length ?? 0, location = min(selection.location, view.textStorage?.length ?? 0)
-                view.setSelectedRange(NSRange(location: location, length: min(selection.length, length - location)))
-                view.cleanTypingAttributes()
-            }
-        }
-        func publish() {
-            guard let view, !view.loading, !view.hasMarkedText() else { return }
-            do {
-                let blocks = try NotesContinuousDocument.blocks(from:view.attributedString(),scale:view.readingScale,trailingAttributes:view.trailingAttributes)
-                if let previous = parent.session.pendingTextFailure, parent.session.failure == previous { parent.session.failure = nil }
-                parent.session.pendingTextFailure = nil
-                lastBlocks = blocks; parent.session.updateBlocks(blocks)
-            } catch {
-                let reason = "正文尚未保存，请保留窗口并复制内容。" + error.localizedDescription
-                parent.session.pendingTextFailure = reason; parent.session.dirty = true
-                parent.session.recoveryProtected = false; parent.session.failure = reason
-            }
-        }
-        func textViewDidChangeSelection(_ notification:Notification) {
-            guard let view, !view.loading, !view.hasMarkedText() else { return }
-            view.cleanTypingAttributes()
-            let index = min(view.selectedRange().location,max(0,(view.textStorage?.length ?? 0) - 1))
-            if (view.textStorage?.length ?? 0) > 0, let id = (view.textStorage?.attribute(.notesBlock,at:index,effectiveRange:nil) as? String).flatMap(UUID.init(uuidString:)) { view.blockID = id; parent.session.focusedBlock = id }
-        }
-        func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool { true }
-        func measure() {
-            guard let view, let container = view.textContainer, let manager = view.layoutManager else { return }
-            manager.ensureLayout(for:container)
-            let height = max(100,manager.usedRect(for:container).height + 16)
-            if abs(height - measured) > 0.5 { measured = height; DispatchQueue.main.async { [weak self] in self?.parent.onHeight(height) } }
-        }
-    }
-}

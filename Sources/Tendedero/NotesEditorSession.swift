@@ -324,13 +324,44 @@ final class NotesEditorSession: ObservableObject {
         catch { reportAttachmentFailure("暂时无法准备附件撤销：" + error.localizedDescription, retryLabel: "重试") { [weak self] in self?.retryBackup(attachment) } }
     }
     func pasteImage(_ image: NSImage) {
+        guard let bytes = NotesEditorPasteboard.pngData(image) else {
+            reportAttachmentFailure("图片未能粘贴：无法读取图片内容"); return
+        }
+        pasteImages([bytes])
+    }
+    func pasteImages(_ images: [Data]) {
+        importItems(images.map(NotesEditorImport.image))
+    }
+    func appendDroppedItems(_ entries: [NotesEditorImport]) {
+        guard !entries.isEmpty else { return }
+        do { try commit() }
+        catch {
+            reportAttachmentFailure("拖入未完成：" + error.localizedDescription, retryLabel: "重试添加") { [weak self] in self?.appendDroppedItems(entries) }
+            return
+        }
+        // Native text drops own their pointer position. The surrounding paper
+        // has no text position, so it appends rather than reusing an old selection.
+        if let textView { textView.setSelectedRange(NSRange(location: textView.string.utf16.count, length: 0)) }
+        focusedBlock = note.blocks.last?.id
+        importItems(entries)
+    }
+    func importItems(_ entries: [NotesEditorImport]) {
+        guard !entries.isEmpty else { return }
         do {
             try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
-            guard let tiff = image.tiffRepresentation, let bitmap = NSBitmapImageRep(data: tiff), let data = bitmap.representation(using: .png, properties: [:]) else { throw NotesStoreError.invalidSource }
-            let url = temporaryDirectory.appendingPathComponent("粘贴图片-" + UUID().uuidString + ".png")
-            try data.write(to: url)
-            importURLs([url])
-        } catch { reportAttachmentFailure("图片未能粘贴：" + error.localizedDescription, retryLabel: "重试粘贴") { [weak self] in self?.pasteImage(image) } }
+            let urls = try entries.enumerated().map { index, entry -> URL in
+                if case .file(let url) = entry { return url }
+                guard case .image(let bytes) = entry else { throw NotesStoreError.invalidSource }
+                guard NSImage(data: bytes) != nil else { throw NotesStoreError.invalidSource }
+                let url = temporaryDirectory.appendingPathComponent("粘贴图片-\(index + 1)-" + UUID().uuidString + ".png")
+                try bytes.write(to: url)
+                return url
+            }
+            // One import transaction preserves order, insertion position and undo grouping.
+            importURLs(urls)
+        } catch {
+            reportAttachmentFailure("内容未能添加：" + error.localizedDescription, retryLabel: "重试添加") { [weak self] in self?.importItems(entries) }
+        }
     }
     func prepareAttachmentsForRemoval(_ attachments: [NoteAttachment]) throws {
         for attachment in attachments { try backUp(attachment) }
@@ -395,6 +426,7 @@ final class NotesEditorSession: ObservableObject {
     var readableText: String {
         if pendingTextFailure != nil, let view = textView as? NotesContinuousTextView { return note.displayTitle + "\n" + view.plainTextForBackup }
         return ([note.displayTitle] + note.blocks.map { block in
+            if let list = NotesListEditing.descriptor(block), list.kind == "ordered" { return NotesListEditing.markdownPrefix(list) + block.text }
             switch block.kind { case .checklist: return "\(block.isChecked ? "☑" : "☐") \(block.text)"; default: return block.text }
         }).joined(separator: "\n")
     }

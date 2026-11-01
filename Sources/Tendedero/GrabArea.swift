@@ -280,7 +280,9 @@ final class GrabView: NSView, NSDraggingSource {
                          sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
         // Apps pick copy. Finder picks move, so a folder or the Desktop keeps
         // the file. Delete is what lets the Dock's Trash accept it.
-        context == .outsideApplication ? outsideOperations : (Self.activeDragID != nil ? .move : [])
+        // Notes are another destination inside this app: they copy the file.
+        // Rope cards still choose move when reordering the existing item.
+        context == .outsideApplication ? outsideOperations : (Self.activeDragID != nil ? [.copy, .move] : [])
     }
 
     func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {

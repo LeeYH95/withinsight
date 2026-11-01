@@ -35,10 +35,18 @@ import SwiftUI
         font.notesDetail = followsParagraph ? (view?.selectionHeading == 0 ? "15（默认）" : "跟随段落") : view?.selectionSize.map(sizeLabel) ?? "混合字号"
         font.submenu = sizes; menu.addItem(font)
         let bullets = ClosureMenuItem("项目列表") { session.format(.bullets) }.notesSymbol("list.bullet")
-        bullets.state = view?.isSelected(.bullets) == true ? .on : .off; bullets.isEnabled = editable; menu.addItem(bullets)
+        bullets.state = view?.selectionListKind == "bullet" ? .on : .off; bullets.isEnabled = editable; menu.addItem(bullets)
+        let ordered = ClosureMenuItem("有序列表") { view?.toggleList("ordered") }.notesSymbol("list.number")
+        ordered.state = view?.selectionListKind == "ordered" ? .on : .off; ordered.isEnabled = editable; menu.addItem(ordered)
+        let indent = ClosureMenuItem("增加列表缩进 · Tab") { view?.changeListIndent(1) }.notesSymbol("increase.indent")
+        indent.isEnabled = editable && NotesListEditing.isList(view?.selectionListKind) && view?.selectionListLevel == 0
+        menu.addItem(indent)
+        let outdent = ClosureMenuItem("减少列表缩进 · ⇧Tab") { view?.changeListIndent(-1) }.notesSymbol("decrease.indent")
+        outdent.isEnabled = editable && NotesListEditing.isList(view?.selectionListKind) && view?.selectionListLevel == 1
+        menu.addItem(outdent)
         menu.addItem(.separator())
         let paste = NSMenu(title:"粘贴方式"), current = UserDefaults.standard.string(forKey:"notesPasteMode") ?? "match"
-        for (value,title) in [("match","匹配闪念样式"),("preserve","保留来源格式")] {
+        for (value,title) in [("match","匹配光标处样式"),("preserve","保留来源格式")] {
             let item = ClosureMenuItem(title) { UserDefaults.standard.set(value,forKey:"notesPasteMode"); view?.preservePastedFormatting = value == "preserve" }
             item.state = current == value ? .on : .off; paste.addItem(item)
         }

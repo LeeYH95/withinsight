@@ -3,6 +3,64 @@ import XCTest
 @testable import Tendedero
 
 final class ScreenshotClearTests: XCTestCase {
+    @MainActor func testUndoBannerExpiresThreeSecondsAfterClearFinishes() async throws {
+        let f = try Fixture(); defer { f.clean() }
+        let image = try f.shot("a")
+        let original = try Data(contentsOf: image)
+        f.line.hang(image, quietly: true)
+        f.line.requestScreenshotClear()
+        XCTAssertEqual(f.line.screenshotClearUndoCount, 1)
+        try await Task.sleep(for: .milliseconds(2650))
+        XCTAssertEqual(f.line.screenshotClearUndoCount, 1, "Allow undo throughout the three-second window")
+        try await Task.sleep(for: .milliseconds(650))
+        XCTAssertEqual(f.line.screenshotClearUndoCount, 0, "The completion banner must disappear after three seconds")
+        XCTAssertEqual(f.line.undoScreenshotClear(), 0, "Release the expired undo snapshot with its banner")
+        XCTAssertEqual(try Data(contentsOf: image), original, "Expiry must preserve the original image")
+    }
+
+    @MainActor func testUndoWindowStartsAfterTheSweepFinishes() async throws {
+        let f = try Fixture(); defer { f.clean() }
+        f.line.hang(try f.shot("a"), quietly: true)
+        let batch = try XCTUnwrap(f.line.beginScreenshotClear())
+        try await Task.sleep(for: .milliseconds(3200))
+        f.line.finishScreenshotClear(batch.id)
+        XCTAssertEqual(f.line.screenshotClearUndoCount, 1)
+        try await Task.sleep(for: .milliseconds(650))
+        XCTAssertEqual(f.line.screenshotClearUndoCount, 1)
+        XCTAssertEqual(f.line.undoScreenshotClear(), 1, "Animation time must not consume the undo window")
+    }
+
+    @MainActor func testNextClearGetsItsOwnFullUndoWindow() async throws {
+        let f = try Fixture(); defer { f.clean() }
+        f.line.hang(try f.shot("first"), quietly: true)
+        f.line.requestScreenshotClear()
+        try await Task.sleep(for: .milliseconds(1800))
+        f.line.hang(try f.shot("second"), quietly: true)
+        f.line.requestScreenshotClear()
+        try await Task.sleep(for: .milliseconds(1500))
+        XCTAssertEqual(f.line.screenshotClearUndoCount, 1, "The first timeout must not dismiss the second banner")
+        try await Task.sleep(for: .milliseconds(1800))
+        XCTAssertEqual(f.line.screenshotClearUndoCount, 0, "The second banner must expire on its own deadline")
+    }
+
+    @MainActor func testUndoCancelsItsTimeoutBeforeAnotherClear() async throws {
+        let f = try Fixture(); defer { f.clean() }
+        let image = try f.shot("a")
+        f.line.hang(image, quietly: true)
+        f.line.requestScreenshotClear()
+        try await Task.sleep(for: .milliseconds(1800))
+        XCTAssertEqual(f.line.undoScreenshotClear(), 1)
+        XCTAssertEqual(f.line.screenshotClearUndoCount, 0)
+        XCTAssertEqual(f.line.items.map(\.url), [image])
+        f.line.requestScreenshotClear()
+        try await Task.sleep(for: .milliseconds(1500))
+        XCTAssertEqual(f.line.screenshotClearUndoCount, 1, "An undone operation must not leave a timeout affecting the next clear")
+        XCTAssertEqual(f.line.undoScreenshotClear(), 1)
+        try await Task.sleep(for: .milliseconds(1800))
+        XCTAssertEqual(f.line.items.map(\.url), [image])
+        XCTAssertEqual(f.line.screenshotClearUndoCount, 0)
+    }
+
     @MainActor func testUndoBannerDoesNotExtendTheScrollableCardBand() throws {
         let f = try Fixture(); defer { f.clean() }
         f.line.visibleCount = 1

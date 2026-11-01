@@ -19,9 +19,7 @@ struct LineControl: View {
 
     static func templateMenu(for line: Line) -> NSMenu {
         let menu = NSMenu(title: "新建闪念")
-        menu.addItem(ClosureMenuItem("文字闪念") { line.onNewNote?("text") }.notesSymbol("doc.text"))
-        menu.addItem(ClosureMenuItem("待办清单") { line.onNewNote?("checklist") }.notesSymbol("checklist"))
-        menu.addItem(ClosureMenuItem("图文闪念") { line.onNewNote?("image") }.notesSymbol("photo"))
+        menu.addItem(ClosureMenuItem("新建闪念") { line.onNewNote?("text") }.notesSymbol("doc.text"))
         return menu
     }
 
@@ -33,10 +31,9 @@ struct LineControl: View {
                 .zIndex(1)
             NativePaperButton(isNew: isNew, action: {
                 motion.nudge(2.2)
-                line.onShowNotes?()
-            }, menu: isNew ? {
-                Self.templateMenu(for: line)
-            } : nil, onMenuPress: { motion.nudge(2.2) })
+                if isNew { line.onNewNote?("text") }
+                else { line.onShowNotes?() }
+            }, menu: nil, onMenuPress: { motion.nudge(2.2) })
             .frame(width: Self.targetSize.width, height: Self.targetSize.height)
             .background(GeometryReader { g in
                 Color.clear.preference(key: HitRectsKey.self,

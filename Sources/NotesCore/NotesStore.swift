@@ -281,7 +281,12 @@ public final class NotesStore: ObservableObject {
             for block in note.blocks {
                 switch block.kind {
                 case .paragraph: sections.append(block.markdown ?? escapeMarkdown(block.text))
-                case .checklist: sections.append("- [\(block.isChecked ? "x" : " ")] " + escapeMarkdown(block.text))
+                case .checklist:
+                    let markdown = block.markdown ?? ""
+                    let indent = String(markdown.prefix { $0 == " " || $0 == "\t" })
+                    let body = String(markdown.dropFirst(indent.count))
+                    let explicitTask = body.hasPrefix("- [ ] ") || body.hasPrefix("- [x] ") || body.hasPrefix("- [X] ")
+                    sections.append((explicitTask ? indent : "") + "- [\(block.isChecked ? "x" : " ")] " + (explicitTask ? String(body.dropFirst(6)) : escapeMarkdown(block.text)))
                 case .image, .file:
                     guard let id = block.attachmentID,
                           let attachment = note.attachments.first(where: { $0.id == id }),

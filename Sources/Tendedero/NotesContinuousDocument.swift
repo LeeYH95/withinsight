@@ -18,9 +18,10 @@ extension NSAttributedString.Key {
         let result = NSMutableAttributedString(string: "")
         for (index, block) in note.blocks.enumerated() {
             let heading = block.markdown?.hasPrefix("# ") == true ? 1 : block.markdown?.hasPrefix("## ") == true ? 2 : 0
-            let bullet = block.kind == .paragraph && (block.text.hasPrefix("• ") || block.markdown?.hasPrefix("- ") == true)
-            let kind = bullet ? "bullet" : block.kind.rawValue
-            let metadata: [NSAttributedString.Key: Any] = [.notesBlock:block.id.uuidString, .notesKind:kind, .notesChecked:block.isChecked, .notesHeading:heading]
+            let list = NotesListEditing.descriptor(block)
+            let kind = list?.kind ?? block.kind.rawValue
+            var metadata: [NSAttributedString.Key: Any] = [.notesBlock:block.id.uuidString, .notesKind:kind, .notesChecked:block.isChecked, .notesHeading:heading]
+            if let list { metadata[.notesListLevel] = list.level; metadata[.notesListNumber] = list.number }
             let content: NSMutableAttributedString
             if block.kind == .image || block.kind == .file {
                 let attachment = note.attachments.first { $0.id == block.attachmentID }
@@ -35,7 +36,7 @@ extension NSAttributedString.Key {
                     content = NSMutableAttributedString(string: block.text, attributes: [.font:NSFont.systemFont(ofSize: bodySize)])
                 }
                 sanitizeLinks(in: content)
-                if bullet, content.string.hasPrefix("• ") { content.deleteCharacters(in: NSRange(location: 0, length: 2)) }
+                if list?.kind == "bullet", content.string.hasPrefix("• ") { content.deleteCharacters(in: NSRange(location: 0, length: 2)) }
                 let unscaled = NSAttributedString(attributedString: content)
                 unscaled.enumerateAttribute(.font, in: NSRange(location: 0, length: unscaled.length)) { value, range, _ in
                     let font = value as? NSFont ?? NSFont.systemFont(ofSize: bodySize)
@@ -44,13 +45,13 @@ extension NSAttributedString.Key {
                 if block.richText == nil, heading > 0, content.length > 0 {
                     content.addAttribute(.font, value: NSFont.systemFont(ofSize: bodySize * (heading == 1 ? 1.65 : 1.28) * scale, weight: .semibold), range: NSRange(location: 0, length: content.length))
                 }
-                if kind == "checklist" { content.insert(taskMarker(checked: block.isChecked, size: bodySize * scale), at: 0) }
-                else if bullet { content.insert(NSAttributedString(string: "•\t", attributes: [.font:NSFont.systemFont(ofSize: bodySize * scale), .notesMarker:true]), at: 0) }
+                if let list { content.insert(NotesListEditing.marker(kind: list.kind, number: list.number, checked: block.isChecked, font: NSFont.systemFont(ofSize: bodySize * scale)), at: 0) }
             }
             if index < note.blocks.count - 1 { content.append(NSAttributedString(string: "\n")) }
             if content.length > 0 { content.addAttributes(metadata, range: NSRange(location: 0, length: content.length)) }
             result.append(content)
         }
+        NotesListEditing.normalize(result, selection: NSRange(location: 0, length: 0))
         normalizeLayout(result, scale: scale)
         return result
     }
@@ -109,16 +110,25 @@ extension NSAttributedString.Key {
             let style = NSMutableParagraphStyle()
             style.minimumLineHeight = size * 1.75
             style.paragraphSpacing = size * 0.8
-            if kind == "checklist" || kind == "bullet" {
+            if NotesListEditing.isList(kind) {
+                let level = min(1, max(0, attributes[.notesListLevel] as? Int ?? 0))
+                let indent = CGFloat(level) * size * 1.8
                 style.headIndent = size * 1.55
+                if kind == "ordered" {
+                    let marker = "\(attributes[.notesListNumber] as? Int ?? 1)."
+                    style.headIndent = max(style.headIndent, (marker as NSString).size(withAttributes: [.font: baselineFont ?? NSFont.systemFont(ofSize: size)]).width + size * 0.5)
+                }
                 if kind == "checklist" {
                     // The minimum-size checkbox must still fit before the tab
                     // at small fonts; wrapped text uses the same body column.
                     style.headIndent = max(style.headIndent, max(14, size) + 2 + size * 0.35)
                 }
-                style.firstLineHeadIndent = attributes[.notesMarker] as? Bool == true ? 0 : style.headIndent
+                style.headIndent += indent
+                style.firstLineHeadIndent = attributes[.notesMarker] as? Bool == true ? indent : style.headIndent
                 style.tabStops = [NSTextTab(textAlignment: .left, location: style.headIndent)]
                 style.defaultTabInterval = style.headIndent
+                let marker = NotesListEditing.markerRange(in: value, paragraph: range)
+                if marker.length > 0 { value.addAttribute(.font, value: baselineFont ?? NSFont.systemFont(ofSize: size), range: marker) }
             }
             value.addAttributes([.paragraphStyle:style, .foregroundColor:NSColor(NotesTheme.text)], range: range)
             if kind == "checklist", attributes[.notesMarker] as? Bool == true {
@@ -135,7 +145,7 @@ extension NSAttributedString.Key {
         let emptyID = (trailingAttributes[.notesBlock] as? String).flatMap(UUID.init(uuidString:)) ?? UUID()
         guard value.length > 0 else { return [NoteBlock(id: emptyID)] }
         let text = value.string as NSString
-        struct Part { var id: UUID; var kind: String; var heading: Int; var checked: Bool; var range: NSRange }
+        struct Part { var id: UUID; var kind: String; var heading: Int; var checked: Bool; var level: Int; var number: Int; var range: NSRange }
         var parts: [Part] = [], cursor = 0
         func append(_ range: NSRange, ownedAttachment: Bool = false) {
             let attrs = value.attributes(at: min(range.location, value.length - 1), effectiveRange: nil)
@@ -152,9 +162,11 @@ extension NSAttributedString.Key {
             }
             let heading = ownedAttachment || sourceKind == "image" || sourceKind == "file" ? 0 : attrs[.notesHeading] as? Int ?? 0
             let checked = attrs[.notesChecked] as? Bool ?? false
-            if let last = parts.last, last.id == id, last.kind == kind, last.heading == heading, last.checked == checked, !ownedAttachment, last.kind != "image", last.kind != "file" {
+            let level = min(1, max(0, attrs[.notesListLevel] as? Int ?? 0))
+            let number = max(1, attrs[.notesListNumber] as? Int ?? 1)
+            if let last = parts.last, last.id == id, last.kind == kind, last.heading == heading, last.checked == checked, last.level == level, !NotesListEditing.isList(kind), !ownedAttachment, last.kind != "image", last.kind != "file" {
                 parts[parts.count - 1].range.length = NSMaxRange(range) - last.range.location
-            } else { parts.append(Part(id:id, kind:kind, heading:heading, checked:checked, range:range)) }
+            } else { parts.append(Part(id:id, kind:kind, heading:heading, checked:checked, level:level, number:number, range:range)) }
         }
         while cursor < text.length {
             let paragraph = text.paragraphRange(for: NSRange(location: cursor, length: 0))
@@ -178,7 +190,7 @@ extension NSAttributedString.Key {
             cursor = NSMaxRange(paragraph)
         }
         // A final empty paragraph is a real caret destination, not disposable whitespace.
-        if text.hasSuffix("\n") { parts.append(Part(id:emptyID, kind:trailingAttributes[.notesKind] as? String ?? "paragraph", heading:trailingAttributes[.notesHeading] as? Int ?? 0, checked:false, range:NSRange(location:text.length, length:0))) }
+        if text.hasSuffix("\n") { parts.append(Part(id:emptyID, kind:trailingAttributes[.notesKind] as? String ?? "paragraph", heading:trailingAttributes[.notesHeading] as? Int ?? 0, checked:false, level:trailingAttributes[.notesListLevel] as? Int ?? 0, number:trailingAttributes[.notesListNumber] as? Int ?? 1, range:NSRange(location:text.length, length:0))) }
         var seen = Set<UUID>(), blocks: [NoteBlock] = []
         for part in parts {
             var id = part.id
@@ -195,13 +207,16 @@ extension NSAttributedString.Key {
             let original = NSAttributedString(attributedString: body)
             original.enumerateAttributes(in: NSRange(location: 0, length: original.length)) { attributes, range, _ in
                 if let font = attributes[.font] as? NSFont { body.addAttribute(.font, value:NSFontManager.shared.convert(font, toSize:font.pointSize / max(0.1, scale)), range:range) }
-                for key in [.notesBlock, .notesKind, .notesChecked, .notesHeading, .notesAttachment, .notesAttachmentName, .notesMarker, .notesPendingLink] as [NSAttributedString.Key] { body.removeAttribute(key, range:range) }
+                for key in [.notesBlock, .notesKind, .notesChecked, .notesHeading, .notesAttachment, .notesAttachmentName, .notesMarker, .notesPendingLink, .notesListLevel, .notesListNumber, .notesListStart, .notesListStartLevel] as [NSAttributedString.Key] { body.removeAttribute(key, range:range) }
             }
             var markdown = RichNoteTextView.Coordinator.markdown(body)
             if part.heading > 0 { markdown = String(repeating:"#", count:part.heading) + " " + markdown }
-            if part.kind == "bullet" {
-                body.insert(NSAttributedString(string:"• ", attributes:[.font:NSFont.systemFont(ofSize:bodySize)]), at:0)
-                markdown = "- " + markdown
+            if NotesListEditing.isList(part.kind) {
+                if part.kind == "bullet" { body.insert(NSAttributedString(string:"• ", attributes:[.font:NSFont.systemFont(ofSize:bodySize)]), at:0) }
+                // Historical top-level checklist Markdown remains unchanged.
+                if part.kind != "checklist" || part.level > 0 {
+                    markdown = NotesListEditing.markdownPrefix(.init(kind: part.kind, level: part.level, number: part.number), checked: part.checked) + markdown
+                }
             }
             let rich = try body.data(from:NSRange(location:0,length:body.length), documentAttributes:[.documentType:NSAttributedString.DocumentType.rtf])
             blocks.append(NoteBlock(id:id, kind:part.kind == "checklist" ? .checklist : .paragraph, text:body.string, richText:rich, markdown:markdown, isChecked:part.checked))
