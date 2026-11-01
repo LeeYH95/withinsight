@@ -332,6 +332,19 @@ final class NotesEditorSession: ObservableObject {
     func pasteImages(_ images: [Data]) {
         importItems(images.map(NotesEditorImport.image))
     }
+    func appendDroppedItems(_ entries: [NotesEditorImport]) {
+        guard !entries.isEmpty else { return }
+        do { try commit() }
+        catch {
+            reportAttachmentFailure("拖入未完成：" + error.localizedDescription, retryLabel: "重试添加") { [weak self] in self?.appendDroppedItems(entries) }
+            return
+        }
+        // Native text drops own their pointer position. The surrounding paper
+        // has no text position, so it appends rather than reusing an old selection.
+        if let textView { textView.setSelectedRange(NSRange(location: textView.string.utf16.count, length: 0)) }
+        focusedBlock = note.blocks.last?.id
+        importItems(entries)
+    }
     func importItems(_ entries: [NotesEditorImport]) {
         guard !entries.isEmpty else { return }
         do {

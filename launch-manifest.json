@@ -52,7 +52,7 @@
       ]
     },
     {
-      "text": "当前版本 0.5.17 (25)，Apple Silicon、本地签名、最低 macOS 14、未公证",
+      "text": "当前版本 0.5.22 (31)，Apple Silicon、本地签名、最低 macOS 14、未公证",
       "evidence": [
         "scripts/build-release.sh",
         "scripts/build-dev-app.sh"
@@ -84,6 +84,41 @@
         "Sources/Tendedero/NoteThumbnail.swift",
         "Tests/LineIntegrationTests/NoteThumbnailTests.swift",
         "Tests/LineIntegrationTests/ChecklistAlignmentTests.swift"
+      ]
+    },
+    {
+      "text": "通用闪念支持图片复制粘贴与挂绳拖入，纸面空白处追加到末尾",
+      "evidence": [
+        "Sources/Tendedero/GrabArea.swift",
+        "Sources/Tendedero/NoteEditorView.swift",
+        "Sources/Tendedero/NotesEditorSession.swift",
+        "Tests/LineIntegrationTests/RopeEditorDragTests.swift",
+        "Tests/LineIntegrationTests/EditorInputTests.swift"
+      ]
+    },
+    {
+      "text": "有序与无序列表支持两级缩进、快捷创建、自动编号，默认粘贴匹配光标字体字号",
+      "evidence": [
+        "Sources/Tendedero/NotesListEditing.swift",
+        "Sources/Tendedero/NotesContinuousTextView.swift",
+        "Tests/LineIntegrationTests/StructuredListTests.swift"
+      ]
+    },
+    {
+      "text": "原生图片预览支持缩放、适应窗口、原始像素、复制和导出",
+      "evidence": [
+        "Sources/Tendedero/NotesImagePreview.swift",
+        "Tests/LineIntegrationTests/ImagePreviewTests.swift"
+      ]
+    },
+    {
+      "text": "挂绳隐藏时暂停周期微风，图片加载中或暂时读取失败时保留路径与原顺序并在下次启动重试",
+      "evidence": [
+        "Sources/Tendedero/Line.swift",
+        "Sources/Tendedero/HangingSwing.swift",
+        "Tests/LineIntegrationTests/BreezePerformanceTests.swift",
+        "Tests/LineIntegrationTests/LineStartupTests.swift",
+        "Tests/LineIntegrationTests/PendingScreenshotClearTests.swift"
       ]
     }
   ],

@@ -97,6 +97,21 @@ final class EditorInputTests: XCTestCase {
             XCTAssertNotEqual(try session.store.url(for: attachment), file)
         }
     }
+    @MainActor func testDropOnOuterPaperAppendsInsteadOfReusingAnEarlierCaret() throws {
+        try withEditor { view, session, _ in
+            view.insertText("开头\n正文末尾", replacementRange: view.selectedRange())
+            try session.commit()
+            session.undoManager.removeAllActions()
+            view.setSelectedRange(NSRange(location: 0, length: 2))
+            session.appendDroppedItems([.image(try png())])
+            let imageIndex = try XCTUnwrap(session.note.blocks.firstIndex(where: { $0.kind == .image }))
+            let beforeImage = session.note.blocks.prefix(imageIndex).map(\.text).joined(separator: "\n")
+            XCTAssertTrue(beforeImage.contains("开头\n正文末尾"), "Paper outside the native text view must append after all text, without replacing the stale selection")
+            session.undo()
+            XCTAssertEqual(session.note.attachments.count, 0)
+            XCTAssertEqual(session.note.blocks.map(\.text).joined(separator: "\n"), "开头\n正文末尾")
+        }
+    }
     @MainActor func testMixedFileAndRawImagePastePreservesBothItemsAndTheirOrder() throws {
         try withEditor { view, session, root in
             let bytes = try png(), source = root.appendingPathComponent("rope.png"); try bytes.write(to: source)

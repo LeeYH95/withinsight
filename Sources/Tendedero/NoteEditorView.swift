@@ -156,7 +156,7 @@ struct NoteEditorView: View {
     private func drop(_ providers: [NSItemProvider]) -> Bool {
         guard providers.contains(where: { $0.hasItemConformingToTypeIdentifier("public.file-url") || $0.canLoadObject(ofClass: NSImage.self) }) else { return false }
         Task { @MainActor in
-            do { session.importItems(try await NotesEditorDrop.load(providers)) }
+            do { session.appendDroppedItems(try await NotesEditorDrop.load(providers)) }
             catch { session.reportAttachmentFailure("拖入未完成：" + error.localizedDescription) }
         }
         return true

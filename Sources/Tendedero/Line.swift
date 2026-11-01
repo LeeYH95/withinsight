@@ -34,6 +34,8 @@ struct ScreenshotClearBatch {
     let id = UUID()
     let items: [Pegged]
     let targets: [Pegged]
+    let pendingPaths: [String]
+    let orderKeys: [String]
     let scroll: CGFloat
     let visibleCount: Int
     var targetIDs: Set<UUID> { Set(targets.map(\.id)) }
@@ -56,7 +58,7 @@ final class Line: ObservableObject {
     let screenshotSweep = ScreenshotSweepMotion()
     var onClearScreenshots: ((ScreenshotClearBatch) -> Void)?
     private var clearedScreenshots: [Pegged] = []
-    private var screenshotClearUndo: (items: [Pegged], order: [UUID], scroll: CGFloat)?
+    private var screenshotClearUndo: (items: [Pegged], order: [UUID], pendingPaths: [String], orderKeys: [String], scroll: CGFloat)?
     private var screenshotClearUndoExpiry: Task<Void, Never>?
 
     /// Card frames in window coordinates, reported by the views. The panel
@@ -94,6 +96,10 @@ final class Line: ObservableObject {
     private let initialOrder: [String]
     private let defaults: UserDefaults
     private let inboxFolder: URL?
+    /// Saved photos stay in the persisted line while their files are loading
+    /// or temporarily unavailable. They are retried on the next launch.
+    @Published private var pendingPhotoPaths: [String] = []
+    private var restoredInitialOrder = false
 
     init(restoring: Bool = true, gusts: Bool = true, defaults: UserDefaults = LaunchOptions.lineDefaults,
          inboxFolder: URL? = nil) {
@@ -140,7 +146,13 @@ final class Line: ObservableObject {
 
     func removeNote(_ id: UUID) { drop(id, quietly: true) }
     var screenshotCount: Int { items.filter { $0.noteID == nil && !$0.falling }.count }
-    var clearableScreenshotCount: Int { items.filter { $0.noteID == nil && !$0.isRecording && !$0.falling }.count }
+    var clearableScreenshotCount: Int {
+        items.filter { $0.noteID == nil && !$0.isRecording && !$0.falling }.count + pendingScreenshotPaths.count
+    }
+    private var pendingScreenshotPaths: [String] {
+        let loaded = Set(items.filter { !$0.falling }.map { $0.url.path })
+        return pendingPhotoPaths.filter { !loaded.contains($0) && !Tendedero.isRecording(URL(fileURLWithPath: $0)) }
+    }
 
     func acceptsPointer(at point: CGPoint) -> Bool {
         if hitRects.values.contains(where: { $0.insetBy(dx: -4, dy: -4).contains(point) }) { return true }
@@ -186,6 +198,7 @@ final class Line: ObservableObject {
         items.sort { (order[orderKey($0)] ?? (saved.count + original[$0.id, default: 0]))
             < (order[orderKey($1)] ?? (saved.count + original[$1.id, default: 0])) }
         save()
+        restoredInitialOrder = true
     }
 
     private func orderKey(_ item: Pegged) -> String {
@@ -247,11 +260,16 @@ final class Line: ObservableObject {
     func beginScreenshotClear() -> ScreenshotClearBatch? {
         guard screenshotClear == nil else { return nil }
         let targets = items.filter { $0.noteID == nil && !$0.isRecording && !$0.falling }
-        guard !targets.isEmpty else { return nil }
-        let batch = ScreenshotClearBatch(items: items, targets: targets, scroll: scroll, visibleCount: visibleCount)
+        let pending = pendingScreenshotPaths
+        guard !targets.isEmpty || !pending.isEmpty else { return nil }
+        let batch = ScreenshotClearBatch(items: items, targets: targets, pendingPaths: pending,
+                                        orderKeys: defaults.stringArray(forKey: "mixedLineOrder") ?? items.map(orderKey),
+                                        scroll: scroll, visibleCount: visibleCount)
         resetScreenshotClearUndo()
         clearedScreenshots = []
         screenshotClear = batch
+        let pendingTargets = Set(pending)
+        pendingPhotoPaths.removeAll { pendingTargets.contains($0) }
         save()
         return batch
     }
@@ -273,8 +291,8 @@ final class Line: ObservableObject {
         guard let batch = screenshotClear, batch.id == id else { return }
         for target in batch.targets { releaseScreenshot(target.id, in: id, animated: false) }
         items.removeAll { batch.targetIDs.contains($0.id) }
-        screenshotClearUndo = (clearedScreenshots, batch.items.map(\.id), batch.scroll)
-        screenshotClearUndoCount = clearedScreenshots.count
+        screenshotClearUndo = (clearedScreenshots, batch.items.map(\.id), batch.pendingPaths, batch.orderKeys, batch.scroll)
+        screenshotClearUndoCount = clearedScreenshots.count + batch.pendingPaths.count
         screenshotClearUndoExpiry = Task { @MainActor [weak self] in
             do { try await Task.sleep(for: .seconds(3)) }
             catch { return }
@@ -305,9 +323,14 @@ final class Line: ObservableObject {
             } else { items.insert(item, at: 0) }
             restored += 1
         }
+        let loaded = Set(items.filter { !$0.falling }.map { $0.url.path })
+        for path in undo.pendingPaths where !loaded.contains(path) && !pendingPhotoPaths.contains(path) {
+            pendingPhotoPaths.append(path)
+            restored += 1
+        }
         resetScreenshotClearUndo()
         scroll = min(undo.scroll, CGFloat(max(0, items.count - visibleCount)) * Layout.spacing)
-        save()
+        save(restoringOrder: undo.orderKeys)
         return restored
     }
 
@@ -515,18 +538,39 @@ final class Line: ObservableObject {
     private func scheduleGust() {
         DispatchQueue.main.asyncAfter(deadline: .now() + .random(in: 7...16)) { [weak self] in
             guard let self else { return }
-            if !self.items.isEmpty && self.draggingID == nil { self.gust += 1 }
+            self.emitGustIfNeeded()
             self.scheduleGust()
         }
     }
 
+    func emitGustIfNeeded() {
+        guard revealed, !items.isEmpty, draggingID == nil else { return }
+        gust += 1
+    }
+
     // MARK: Persistence
 
-    private func save() {
+    private func save(restoringOrder: [String]? = nil) {
         let excluded = screenshotClear?.targetIDs ?? []
         let saved = items.filter { !$0.falling && !excluded.contains($0.id) }
-        defaults.set(saved.map(orderKey), forKey: "mixedLineOrder")
-        defaults.set(saved.filter { $0.noteID == nil }.map(\.url.path), forKey: storeKey)
+        let visiblePaths = Set(saved.filter { $0.noteID == nil }.map(\.url.path))
+        pendingPhotoPaths.removeAll { visiblePaths.contains($0) }
+        var order = saved.map(orderKey)
+        let pendingKeys = Set(pendingPhotoPaths.map { "image:" + $0 })
+        let previous = restoringOrder ?? (restoredInitialOrder ? (defaults.stringArray(forKey: "mixedLineOrder") ?? initialOrder) : initialOrder)
+        // Insert each unavailable image before the next surviving original
+        // neighbour. This keeps its place even while notes are restored one
+        // at a time and each note persists the partially populated line.
+        for (index, key) in previous.enumerated() where pendingKeys.contains(key) && !order.contains(key) {
+            let next = previous.dropFirst(index + 1).first { order.contains($0) }
+            if let next, let at = order.firstIndex(of: next) { order.insert(key, at: at) }
+            else if let before = previous.prefix(index).last(where: { order.contains($0) }), let at = order.firstIndex(of: before) {
+                order.insert(key, at: at + 1)
+            } else { order.insert(key, at: 0) }
+        }
+        for path in pendingPhotoPaths where !order.contains("image:" + path) { order.append("image:" + path) }
+        defaults.set(order, forKey: "mixedLineOrder")
+        defaults.set(order.compactMap { $0.hasPrefix("image:") ? String($0.dropFirst(6)) : nil }, forKey: storeKey)
     }
 
     /// Everything comes back as it was. This runs before the line knows its
@@ -544,6 +588,8 @@ final class Line: ObservableObject {
     func restorePhotos(paths: [String]? = nil,
                        loader: @escaping @Sendable (URL) -> NSImage? = { makeThumbnail($0) }) async {
         let saved = paths ?? defaults.stringArray(forKey: storeKey) ?? []
+        var seen: Set<String> = []
+        pendingPhotoPaths = saved.filter { seen.insert($0).inserted }
         // File Provider and recording thumbnails may take an arbitrary amount
         // of time. The startup window must still be able to repaint or cancel.
         let photos = await Task.detached(priority: .userInitiated) {
@@ -555,9 +601,14 @@ final class Line: ObservableObject {
                 return RestoredLinePhoto(url: url, image: image)
             }
         }.value
-        for photo in photos where !items.contains(where: { $0.url == photo.url }) {
+        // The batch may have explicitly removed a saved reference while its
+        // decoder was running. A late result must not put it back on the rope.
+        let stillPending = Set(pendingPhotoPaths)
+        for photo in photos where stillPending.contains(photo.url.path) && !items.contains(where: { $0.url == photo.url }) {
             items.append(Pegged(url: photo.url, thumb: photo.image))
         }
+        let restored = Set(photos.map { $0.url.path })
+        pendingPhotoPaths.removeAll { restored.contains($0) }
     }
 
     // MARK: Helpers

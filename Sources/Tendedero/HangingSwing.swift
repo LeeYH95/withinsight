@@ -18,7 +18,13 @@ import SwiftUI
         guard !HangingMotion.reduced else { return }
         let delay = Double.random(in: 0...0.35)
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-            self?.nudge(Double.random(in: 1.6...3.4))
+            guard let self else { return }
+            let degrees = Double.random(in: 1.6...3.4)
+            withAnimation(.easeOut(duration: 0.25)) { self.angle = degrees }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+                guard let self else { return }
+                withAnimation(.spring(response: 0.65, dampingFraction: 0.75)) { self.angle = 0 }
+            }
         }
     }
 
