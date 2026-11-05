@@ -211,8 +211,10 @@ final class LinkTitlePasteTests: XCTestCase {
         defer { probe.close() }
         var opened: [URL] = []
         f.view.openLink = { opened.append($0) }
-        try probe.click(from: probe.point(at: 2))
-        XCTAssertEqual(opened.map(\.absoluteString), ["https://example.com/original"])
+        let point = try probe.point(at: 2)
+        XCTAssertNotNil(f.view.linkContext(at: point), "The native fixture must hit a link before dispatch")
+        try probe.click(from: point)
+        XCTAssertEqual(opened.map(\.absoluteString), ["https://example.com/original"], probe.lastTrace)
         XCTAssertEqual(f.view.string, "单击直接打开的标题")
     }
 
@@ -401,6 +403,7 @@ final class LinkTitlePasteTests: XCTestCase {
 @MainActor private final class NativeLinkClick: NSObject, NSTextViewDelegate {
     let view: NotesContinuousTextView
     let window: NSWindow
+    private(set) var lastTrace = ""
     init(view: NotesContinuousTextView) throws {
         self.view = view
         window = NSWindow(contentRect: NSRect(x: -12_000, y: -12_000, width: 480, height: 300),
@@ -432,7 +435,11 @@ final class LinkTitlePasteTests: XCTestCase {
         let down = try event(.leftMouseDown, start, 0)
         NSApp.postEvent(try event(.leftMouseUp, end ?? start, 0.1), atStart: true)
         if let end { NSApp.postEvent(try event(.leftMouseDragged, end, 0.05), atStart: true) }
+        let queued = NSApp.nextEvent(matching: [.leftMouseUp, .leftMouseDragged], until: .distantPast,
+                                     inMode: .eventTracking, dequeue: false)
+        lastTrace = "downWindow=\(down.windowNumber) queuedWindow=\(queued?.windowNumber ?? -1) start=\(start) queuedPoint=\(queued.map { view.convert($0.locationInWindow, from: nil) } ?? .zero) bounds=\(view.bounds) hit=\(view.linkContext(at: start)?.url.absoluteString ?? "none")"
         view.mouseDown(with: down)
+        lastTrace += " afterBounds=\(view.bounds) afterHit=\(view.linkContext(at: start)?.url.absoluteString ?? "none")"
     }
     func close() { view.delegate = nil; window.orderOut(nil) }
 }
