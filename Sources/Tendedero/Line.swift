@@ -60,6 +60,30 @@ final class Line: ObservableObject {
     private var clearedScreenshots: [Pegged] = []
     private var screenshotClearUndo: (items: [Pegged], order: [UUID], pendingPaths: [String], orderKeys: [String], scroll: CGFloat)?
     private var screenshotClearUndoExpiry: Task<Void, Never>?
+    @Published private(set) var copiedImagesUndoIDs: [UUID] = []
+    private var copiedImagesUndoExpiry: Task<Void, Never>?
+
+    func recordCopiedImages(_ ids: [UUID]) {
+        resetCopiedImagesUndo()
+        resetScreenshotClearUndo()
+        copiedImagesUndoIDs = ids
+        copiedImagesUndoExpiry = Task { @MainActor [weak self] in
+            do { try await Task.sleep(for: .seconds(3)) }
+            catch { return }
+            self?.resetCopiedImagesUndo()
+        }
+    }
+
+    func undoCopiedImages() {
+        for id in copiedImagesUndoIDs { drop(id, quietly: true, animated: false) }
+        resetCopiedImagesUndo()
+    }
+
+    private func resetCopiedImagesUndo() {
+        copiedImagesUndoExpiry?.cancel()
+        copiedImagesUndoExpiry = nil
+        copiedImagesUndoIDs = []
+    }
 
     /// Card frames in window coordinates, reported by the views. The panel
     /// uses them to only catch clicks over photos and let the rest through.
@@ -262,6 +286,7 @@ final class Line: ObservableObject {
         let targets = items.filter { $0.noteID == nil && !$0.isRecording && !$0.falling }
         let pending = pendingScreenshotPaths
         guard !targets.isEmpty || !pending.isEmpty else { return nil }
+        resetCopiedImagesUndo()
         let batch = ScreenshotClearBatch(items: items, targets: targets, pendingPaths: pending,
                                         orderKeys: defaults.stringArray(forKey: "mixedLineOrder") ?? items.map(orderKey),
                                         scroll: scroll, visibleCount: visibleCount)
@@ -377,6 +402,7 @@ final class Line: ObservableObject {
         if let noteID = items.first(where: { $0.id == id })?.noteID { onCopyNote?(noteID); return }
         guard let item = items.first(where: { $0.id == id }) else { return }
         let entry = NSPasteboardItem()
+        entry.setString("1", forType: NotesEditorPasteboard.copiedImageType)
         // A recording is copied as the file, which apps paste as the video.
         if !item.isRecording, let png = pngData(item.url) { entry.setData(png, forType: .png) }
         entry.setString(item.url.absoluteString, forType: .fileURL)

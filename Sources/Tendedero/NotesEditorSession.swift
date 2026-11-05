@@ -12,6 +12,7 @@ final class NotesEditorSession: ObservableObject {
     @Published var attachmentFailure: String?
     @Published var attachmentRetryLabel: String?
     private var attachmentRetry: (() -> Void)?
+    var pendingImageInsertions: Set<UUID> = []
     @Published var undoRevision = 0
     @Published var focusedBlock: UUID?
     let store: NotesStore
@@ -287,6 +288,7 @@ final class NotesEditorSession: ObservableObject {
             if !additions.isEmpty {
                 recoveryBase = latest
                 let addedIDs = Set(additions.map(\.id))
+                pendingImageInsertions.formUnion(additions.filter { $0.kind == .image }.map(\.id))
                 let addedBlocks = latest.blocks.filter { $0.attachmentID.map(addedIDs.contains) == true }
                 note = old
                 note.attachments = latest.attachments
@@ -388,6 +390,74 @@ final class NotesEditorSession: ObservableObject {
             clearAttachmentFailure()
         } catch { reportAttachmentFailure("暂时无法撤销附件移除：" + error.localizedDescription, retryLabel: "重试移除") { [weak self] in self?.removeAttachment(attachment) } }
     }
+    func updateImageLayout(_ id: UUID, wide: Bool) {
+        guard note.blocks.contains(where: { $0.kind == .image && $0.attachmentID == id }) else { return }
+        change("调整图片宽度") { document in
+            for index in document.blocks.indices where document.blocks[index].attachmentID == id {
+                document.blocks[index].imageWide = wide ? true : nil
+            }
+        }
+    }
+
+    func updateImageCaption(_ id: UUID, caption: String) {
+        guard note.blocks.contains(where: { $0.kind == .image && $0.attachmentID == id }) else { return }
+        let value = String(caption.split(whereSeparator: \.isNewline).joined(separator: " ").trimmingCharacters(in: .whitespaces).prefix(180))
+        change("编辑图片说明") { document in
+            for index in document.blocks.indices where document.blocks[index].attachmentID == id {
+                document.blocks[index].imageCaption = value.isEmpty ? nil : value
+            }
+        }
+    }
+
+    func chooseReplacementImage(for id: UUID) {
+        let panel = Self.attachmentPanel(imagesOnly: true)
+        panel.allowsMultipleSelection = false
+        panel.prompt = "替换图片"
+        if let window {
+            panel.beginSheetModal(for: window) { [weak self] response in
+                if response == .OK, let url = panel.url { self?.replaceImage(id, from: url) }
+            }
+        } else if panel.runModal() == .OK, let url = panel.url {
+            replaceImage(id, from: url)
+        }
+    }
+
+    func replaceImage(_ id: UUID, from url: URL) {
+        guard let attachment = note.attachments.first(where: { $0.id == id && $0.kind == .image }) else { return }
+        do {
+            try commit()
+            try backUp(attachment)
+            endTypingGroup()
+            let previous = note
+            let selection = (textView as? NotesContinuousTextView)?.selectedRange()
+            var saveError: Error?
+            do { try store.replaceImage(id, in: note.id, from: url) }
+            catch { saveError = error }
+            guard let updated = store.document(id: note.id) else { throw NotesStoreError.noteNotFound }
+            if updated.attachments.contains(where: { $0.id == id }) {
+                if let saveError { throw saveError }
+                return
+            }
+            registerUndo(previous, name: "替换图片", bodySelection: selection)
+            recoveryBase = saveError == nil ? updated : previous
+            if let replacement = updated.attachments.first(where: { item in !previous.attachments.contains { $0.id == item.id } }) {
+                pendingImageInsertions.insert(replacement.id)
+            }
+            note = updated; undoRevision += 1
+            if let saveError {
+                edited()
+                reportAttachmentFailure("图片已替换，保存待重试：" + saveError.localizedDescription, retryLabel: "重试保存") { [weak self] in
+                    guard let self else { return }
+                    do { try self.commit(); self.clearAttachmentFailure() } catch { self.failure = error.localizedDescription }
+                }
+            } else { clearAttachmentFailure() }
+        } catch {
+            reportAttachmentFailure("图片未能替换：" + error.localizedDescription, retryLabel: "重试替换") { [weak self] in
+                self?.replaceImage(id, from: url)
+            }
+        }
+    }
+
     static func attachmentPanel(imagesOnly: Bool) -> NSOpenPanel {
         let panel = NSOpenPanel()
         if imagesOnly { panel.allowedContentTypes = [.image] }

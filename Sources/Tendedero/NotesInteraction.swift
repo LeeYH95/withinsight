@@ -15,12 +15,14 @@ enum NotesMotion {
 
 struct NotesPressStyle: ButtonStyle {
     var hoverFill = true
+    var liftOnHover = true
     func makeBody(configuration: Configuration) -> some View {
-        PressBody(configuration: configuration, hoverFill: hoverFill)
+        PressBody(configuration: configuration, hoverFill: hoverFill, liftOnHover: liftOnHover)
     }
     private struct PressBody: View {
         let configuration: ButtonStyleConfiguration
         let hoverFill: Bool
+        let liftOnHover: Bool
         @Environment(\.isEnabled) private var enabled
         @Environment(\.accessibilityReduceMotion) private var systemReduced
         @AppStorage("notesReduceMotion") private var appReduced = false
@@ -28,11 +30,11 @@ struct NotesPressStyle: ButtonStyle {
         private var reduced: Bool { systemReduced || appReduced }
         var body: some View {
             configuration.label
-                .offset(y: !reduced && hovered && enabled && !configuration.isPressed ? -0.5 : 0)
+                .offset(y: liftOnHover && !reduced && hovered && enabled && !configuration.isPressed ? -1 : 0)
                 .background(hoverFill && hovered && enabled ? NotesTheme.accent.opacity(0.08) : .clear,
                             in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                 .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .scaleEffect(!reduced && configuration.isPressed && enabled ? 0.97 : 1)
+                .scaleEffect(!reduced && configuration.isPressed && enabled ? 0.98 : 1)
                 .opacity(configuration.isPressed && enabled ? 0.84 : 1)
                 .animation(reduced ? nil : .easeOut(duration: 0.1), value: configuration.isPressed)
                 .animation(reduced ? nil : .easeOut(duration: 0.12), value: hovered)

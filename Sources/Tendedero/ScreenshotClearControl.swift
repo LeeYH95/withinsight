@@ -162,13 +162,35 @@ struct ScreenshotSweepOverlay: View {
 struct ScreenshotClearResult: View {
     @ObservedObject var line: Line
     var body: some View {
+        LineActionResult(text: "已取下 \(line.screenshotClearUndoCount) 张截图", identifier: "line.undoScreenshotClear") {
+            line.undoScreenshotClear()
+        }
+    }
+}
+
+struct CopiedImagesResult: View {
+    @ObservedObject var line: Line
+    var body: some View {
+        LineActionResult(text: "已挂上 \(line.copiedImagesUndoIDs.count) 张图片", identifier: "line.undoCopiedImages") {
+            line.undoCopiedImages()
+        }
+    }
+}
+
+private struct LineActionResult: View {
+    let text: String
+    let identifier: String
+    let undo: () -> Void
+    var body: some View {
         HStack(spacing: 16) {
-            Text("已取下 \(line.screenshotClearUndoCount) 张截图").foregroundStyle(NotesTheme.text)
-            Button { line.undoScreenshotClear() } label: {
+            Text(text).foregroundStyle(NotesTheme.text)
+            Button(action: undo) {
                 Label("撤销", systemImage: "arrow.uturn.backward").foregroundStyle(NotesTheme.accent)
             }
-            .buttonStyle(NotesPressStyle(hoverFill: false)).accessibilityIdentifier("line.undoScreenshotClear")
+            .buttonStyle(NotesPressStyle(hoverFill: false)).accessibilityIdentifier(identifier)
+            .background { NotesButtonCursor() }
         }
+        .fixedSize()
         .font(.system(size: 12)).padding(.horizontal, 13).padding(.vertical, 8)
         .background(NotesTheme.surface, in: RoundedRectangle(cornerRadius: 9))
         .overlay(RoundedRectangle(cornerRadius: 9).stroke(NotesTheme.border, lineWidth: 0.6))

@@ -31,6 +31,7 @@ final class NotesWorkspace {
     deinit { if let defaultsObserver { NotificationCenter.default.removeObserver(defaultsObserver) }; if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) } }
     private var allWindows: [NSWindow] { editors.values.compactMap(\.window) + [library?.window, settings?.window].compactMap { $0 } }
     var hasVisibleEditor: Bool { editors.values.contains { $0.window?.isVisible == true } }
+    var hasKeyEditor: Bool { editors.values.contains { $0.window?.isKeyWindow == true } }
     func open(_ id: UUID) {
         NotesTooltipPresenter.shared.dismiss()
         guard let document = store.document(id: id), document.deletedAt == nil else { return }
@@ -228,7 +229,9 @@ final class NotesWindow: NSWindow {
                     // SwiftUI's expanded empty paper can hit the text view while
                     // AppKit keeps the title field editor. Focus before routing
                     // the click; native caret placement and dragging still run.
-                    if firstResponder !== body { makeFirstResponder(body) }
+                    if firstResponder !== body, !body.contextTools.containsControl(at: body.convert(event.locationInWindow, from: nil)) {
+                        makeFirstResponder(body)
+                    }
                     break
                 }
                 candidate = view.superview
@@ -240,6 +243,10 @@ final class NotesWindow: NSWindow {
             while let view = candidate {
                 if let text = view as? NSTextView {
                     if let notesText = text as? NotesTextView {
+                        if let body = notesText as? NotesContinuousTextView,
+                           body.contextTools.containsControl(at: body.convert(event.locationInWindow, from: nil)) {
+                            super.sendEvent(event); return
+                        }
                         notesText.rightMouseDown(with: event)
                     } else {
                         NotesTextMenu.show(for: text, event: event, session: NotesTextMenu.session(for: text))
@@ -262,6 +269,9 @@ final class NotesWindow: NSWindow {
     var notesRedo: (() -> Void)?
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         if event.keyCode == 53, attachedSheet == nil, (firstResponder as? NSTextView)?.hasMarkedText() != true {
+            if let view = firstResponder as? NotesContinuousTextView, view.contextTools.isVisible {
+                view.contextTools.detach(); return true
+            }
             cancelOperation(nil); return true
         }
         if event.modifierFlags.contains(.command), event.charactersIgnoringModifiers?.lowercased() == "z", (firstResponder as? NSTextView)?.hasMarkedText() != true, notesUndo != nil {

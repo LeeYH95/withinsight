@@ -73,6 +73,30 @@ enum NotesMenuGeometry {
         return NSRect(x: min(max(x, safe.minX), safe.maxX - width),
                       y: min(max(y, safe.minY), safe.maxY - height), width: width, height: height)
     }
+    static func contextFrame(anchor: NSRect, selection: NSRect, size: NSSize, visible: NSRect) -> NSRect {
+        let safe = visible.insetBy(dx: 8, dy: 8)
+        let width = min(size.width, safe.width)
+        let height = min(size.height, safe.height)
+        let right = max(anchor.maxX, selection.maxX) + 8
+        let left = min(anchor.minX, selection.minX) - width - 8
+        let y = max(safe.minY, min(anchor.maxY - height, safe.maxY - height))
+        if right + width <= safe.maxX { return NSRect(x: right, y: y, width: width, height: height) }
+        if left >= safe.minX { return NSRect(x: left, y: y, width: width, height: height) }
+
+        // Shorten the scrollable panel before covering the selected lines.
+        let above = max(anchor.maxY, selection.maxY) + 8
+        let below = min(anchor.minY, selection.minY) - 8
+        let upperSpace = max(0, safe.maxY - above)
+        let lowerSpace = max(0, below - safe.minY)
+        let x = min(max(anchor.minX, safe.minX), safe.maxX - width)
+        if lowerSpace >= upperSpace, lowerSpace > 0 {
+            let h = min(height, lowerSpace)
+            return NSRect(x: x, y: below - h, width: width, height: h)
+        }
+        if upperSpace > 0 { return NSRect(x: x, y: above, width: width, height: min(height, upperSpace)) }
+        return frame(anchor: anchor, size: size, visible: visible, alignment: .leading)
+    }
+
 }
 
 private final class NotesPopupPanel: NSPanel {
@@ -88,6 +112,7 @@ private final class NotesPopupPanel: NSPanel {
     private weak var originWindow: NSWindow?
     private weak var previousKeyWindow: NSWindow?
     private var anchorRect = NSRect.zero
+    private var avoidedSelection: NSRect?
     private var alignment = NotesMenuAlignment.leading
     private var togglesFromAnchor = false
     private var monitors: [Any] = []
@@ -109,7 +134,7 @@ private final class NotesPopupPanel: NSPanel {
     }
     func show(_ menu: NSMenu, from view: NSView, at point: NSPoint? = nil,
               alignment: NotesMenuAlignment = .leading, togglesFromAnchor: Bool = false,
-              onDismiss: (() -> Void)? = nil) {
+              avoidingSelection: NSRect? = nil, onDismiss: (() -> Void)? = nil) {
         guard let window = view.window else { return }
         NotesTooltipPresenter.shared.dismiss()
         dismiss(animated: false)
@@ -120,6 +145,7 @@ private final class NotesPopupPanel: NSPanel {
         // updates keyWindow; the control's own editor is the focus destination.
         previousKeyWindow = window.canBecomeKey ? window : NSApp.keyWindow
         self.alignment = alignment; self.onDismiss = onDismiss
+        avoidedSelection = avoidingSelection
         self.togglesFromAnchor = togglesFromAnchor
         let local = point.map { NSRect(origin: $0, size: .zero) } ?? view.bounds
         anchorRect = window.convertToScreen(view.convert(local, to: nil))
@@ -167,7 +193,12 @@ private final class NotesPopupPanel: NSPanel {
         let rows = navigator.items.reduce(CGFloat(0)) { $0 + ($1.isSeparatorItem ? 13 : 36) }
         let header: CGFloat = navigator.depth > 0 || !navigator.title.isEmpty ? 39 : 0
         let size = NSSize(width: width, height: min(rows + header + 14, min(650, visible.height - 24)))
-        let frame = NotesMenuGeometry.frame(anchor: anchorRect, size: size, visible: visible, alignment: alignment)
+        let frame: NSRect
+        if let avoidedSelection {
+            frame = NotesMenuGeometry.contextFrame(anchor: anchorRect, selection: avoidedSelection, size: size, visible: visible)
+        } else {
+            frame = NotesMenuGeometry.frame(anchor: anchorRect, size: size, visible: visible, alignment: alignment)
+        }
         if animated && !NotesMotion.reduced {
             NSAnimationContext.runAnimationGroup { context in
                 context.duration = 0.14; context.timingFunction = CAMediaTimingFunction(name: .easeOut)

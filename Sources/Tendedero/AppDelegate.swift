@@ -110,7 +110,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             restoreSettingsOnTermination()
             startWatcher()
         }
-        clipboardWatcher = ClipboardWatcher { [weak self] url in self?.hangCapture(url) }
+        clipboardWatcher = ClipboardWatcher(isHanging: { [weak self] url in
+            self?.line.items.contains(where: { $0.url == url && !$0.falling }) == true
+        }, onImages: { [weak self] urls in self?.hangCopiedImages(urls) })
         if !LaunchOptions.demo && ClipboardWatcher.isEnabled { clipboardWatcher.start() }
 
         if !LaunchOptions.demo { registerShortcut() }
@@ -323,7 +325,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// The line comes down on that screen for a moment, then tucks away.
     /// Without a screen, it uses the one under the pointer.
-    private func comeDown(on screen: NSScreen?) {
+    private func comeDown(on screen: NSScreen?, peekFor seconds: TimeInterval = 2.5) {
         if line.screenshotClear != nil, panel.screen != (screen ?? LinePanel.screenUnderPointer()) {
             line.screenshotSweep.complete()
         }
@@ -331,7 +333,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         updateCapacity()
         wanted = true
         refresh()
-        if Self.peeksAtNew { reveal(peekFor: 2.5) }
+        if Self.peeksAtNew, seconds > 0 { reveal(peekFor: seconds) }
+    }
+
+    private func hangCopiedImages(_ urls: [URL]) {
+        let editing = workspace?.hasKeyEditor == true
+        comeDown(on: nil, peekFor: editing ? 0 : 3)
+        let ids = urls.enumerated().compactMap { index, url in
+            line.hang(url, quietly: index > 0)
+        }
+        if !ids.isEmpty { line.recordCopiedImages(ids) }
+        itemsChanged()
     }
 
     // MARK: The capture flying to the line

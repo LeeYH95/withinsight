@@ -35,6 +35,7 @@ enum NotesEditorImport {
 
 /// Clipboard image representations are alternatives per item, not separate pictures.
 @MainActor enum NotesEditorPasteboard {
+    static let copiedImageType = NSPasteboard.PasteboardType("local.shipian.copied-image")
     static func imports(from board: NSPasteboard) -> [NotesEditorImport] {
         var result: [NotesEditorImport] = []
         for item in board.pasteboardItems ?? [] {
@@ -58,7 +59,8 @@ enum NotesEditorImport {
     }
     @discardableResult static func writeImage(_ data: Data, to board: NSPasteboard) -> Bool {
         guard let image = NSImage(data: data), let png = pngData(image) else { return false }
-        board.addTypes([.png, .tiff], owner: nil)
+        board.addTypes([.png, .tiff, copiedImageType], owner: nil)
+        board.setString("1", forType: copiedImageType)
         let wrote = board.setData(png, forType: .png)
         if let tiff = image.tiffRepresentation { _ = board.setData(tiff, forType: .tiff) }
         return wrote

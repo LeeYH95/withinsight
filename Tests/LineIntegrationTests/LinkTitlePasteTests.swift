@@ -117,16 +117,144 @@ final class LinkTitlePasteTests: XCTestCase {
         XCTAssertNil(rendered.attribute(.notesPendingLink, at: 0, effectiveRange: nil))
     }
 
-    @MainActor func testCommandClickOpensOriginalURLAndNormalClickDoesNotActivate() throws {
+    @MainActor func testNativeHoverShowsHandAndReturnsToEditingCursor() throws {
+        let f = try LinkFixture(); defer { f.clean() }
+        XCTAssertTrue(f.paste("https://example.com/original"))
+        f.loader.complete(0, "链接悬停测试")
+        f.view.insertText(" 普通正文", replacementRange: NSRange(location: f.view.string.utf16.count, length: 0))
+        let probe = try NativeLinkClick(view: f.view); defer { probe.close() }
+        for type: NSEvent.EventType in [.mouseMoved, .cursorUpdate] {
+            for (index, modifier, expected): (Int, NSEvent.ModifierFlags, NSCursor) in [
+                (1, [], .pointingHand), (1, .option, .iBeam), (1, .shift, .iBeam),
+                (1, .control, .iBeam), (1, .command, .pointingHand), (9, [], .iBeam)
+            ] {
+                let point = try probe.point(at: index)
+                let location = f.view.convert(point, to: nil)
+                let event = try XCTUnwrap(type == .mouseMoved
+                    ? NSEvent.mouseEvent(with: .mouseMoved, location: location, modifierFlags: modifier,
+                        timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: probe.window.windowNumber,
+                        context: nil, eventNumber: 2, clickCount: 0, pressure: 0)
+                    : NSEvent.enterExitEvent(with: .cursorUpdate, location: location, modifierFlags: modifier,
+                        timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: probe.window.windowNumber,
+                        context: nil, eventNumber: 2, trackingNumber: 0, userData: nil))
+                NSCursor.arrow.set()
+                if type == .mouseMoved { f.view.mouseMoved(with: event) } else { f.view.cursorUpdate(with: event) }
+                XCTAssertEqual(NSCursor.current, expected, "Native \(type) at \(index), modifiers \(modifier)")
+            }
+        }
+    }
+
+    @MainActor func testLinkContextActionsUseClickedTargetWithoutLosingSelectionAndAreUndoable() throws {
+        let f = try LinkFixture(); defer { f.clean() }
+        XCTAssertTrue(f.paste("https://example.com/original?q=1")); f.loader.complete(0, "上下文菜单")
+        let probe = try NativeLinkClick(view: f.view); defer { probe.close() }
+        let selection = NSRange(location: 1, length: 2); f.view.setSelectedRange(selection)
+        let menu = NotesTextMenu.make(for: f.view, session: f.session, at: try probe.point(at: 2))
+        XCTAssertEqual(f.view.selectedRange(), selection)
+        var opened: [URL] = []; f.view.openLink = { opened.append($0) }
+        NotesMenuPresenter.dispatch(try XCTUnwrap(menu.items.first { $0.title == "打开链接" }))
+        XCTAssertEqual(opened.map(\.absoluteString), ["https://example.com/original?q=1"])
+        NotesMenuPresenter.dispatch(try XCTUnwrap(menu.items.first { $0.title == "编辑链接文字" }))
+        XCTAssertEqual(f.view.selectedRange(), NSRange(location: 0, length: 5))
+        NotesMenuPresenter.dispatch(try XCTUnwrap(menu.items.first { $0.title == "移除链接，保留文字" }))
+        XCTAssertEqual(f.view.string, "上下文菜单"); XCTAssertNil(f.target(at: 0))
+        f.session.undo(); f.view.loadDocument(f.session.note)
+        XCTAssertEqual(f.target(at: 0), "https://example.com/original?q=1")
+        try f.session.commit()
+        let reopened = try NotesStore(directory: f.store.directory)
+        XCTAssertEqual(NotesContinuousDocument.render(try XCTUnwrap(reopened.document(id: f.session.note.id))).string, "上下文菜单")
+    }
+
+    @MainActor func testLinkMenuTracksAnAsyncTitleReplacementAndRemovalClearsItsTooltip() throws {
+        let f = try LinkFixture(); defer { f.clean() }
+        XCTAssertTrue(f.paste("https://example.com/long-original-address"))
+        let probe = try NativeLinkClick(view: f.view); defer { probe.close() }
+        let menu = NotesTextMenu.make(for: f.view, session: f.session, at: try probe.point(at: 2))
+        f.loader.complete(0, "短标题")
+        NotesMenuPresenter.dispatch(try XCTUnwrap(menu.items.first { $0.title == "编辑链接文字" }))
+        XCTAssertEqual(f.view.selectedRange(), NSRange(location: 0, length: 3))
+        NotesMenuPresenter.dispatch(try XCTUnwrap(menu.items.first { $0.title == "移除链接，保留文字" }))
+        XCTAssertEqual(f.view.string, "短标题"); XCTAssertNil(f.target(at: 0))
+        XCTAssertNil(f.view.attributedString().attribute(.toolTip, at: 0, effectiveRange: nil))
+    }
+    @MainActor func testRemovingPendingLinkCannotBeReactivatedByItsLateTitle() throws {
+        let f = try LinkFixture(); defer { f.clean() }
+        let address = "https://example.com/pending"; XCTAssertTrue(f.paste(address))
+        f.view.removeLink(in: NSRange(location: 0, length: f.view.string.utf16.count))
+        XCTAssertNil(f.view.attributedString().attribute(.notesPendingLink, at: 0, effectiveRange: nil))
+        XCTAssertNil(f.view.attributedString().attribute(.toolTip, at: 0, effectiveRange: nil))
+        f.loader.complete(0, "迟到标题")
+        XCTAssertEqual(f.view.string, address); XCTAssertNil(f.target(at: 0))
+    }
+
+    @MainActor func testNormalAndCommandClickBothOpenOriginalURL() throws {
         let f = try LinkFixture(); defer { f.clean() }
         XCTAssertTrue(f.paste("https://example.com/original"))
         f.loader.complete(0, "原始目标")
         var opened: [URL] = []
         f.view.openLink = { opened.append($0) }
-        XCTAssertFalse(f.view.activateLink(at: 0, modifiers: []))
-        XCTAssertTrue(opened.isEmpty)
-        XCTAssertTrue(f.view.activateLink(at: 0, modifiers: .command))
+        XCTAssertTrue(f.view.activateLink(at: 0, modifiers: []))
         XCTAssertEqual(opened.map(\.absoluteString), ["https://example.com/original"])
+        XCTAssertTrue(f.view.activateLink(at: 0, modifiers: .command))
+        XCTAssertEqual(opened.map(\.absoluteString), ["https://example.com/original", "https://example.com/original"])
+        for modifier: NSEvent.ModifierFlags in [.option, .shift, .control] {
+            XCTAssertFalse(f.view.activateLink(at: 0, modifiers: modifier))
+        }
+        XCTAssertEqual(opened.count, 2, "Editing and range-selection modifiers must not navigate")
+    }
+
+    @MainActor func testUnmodifiedMouseClickOnResolvedTitleOpensTheStoredURL() throws {
+        let f = try LinkFixture(); defer { f.clean() }
+        XCTAssertTrue(f.paste("https://example.com/original"))
+        f.loader.complete(0, "单击直接打开的标题")
+        let probe = try NativeLinkClick(view: f.view)
+        defer { probe.close() }
+        var opened: [URL] = []
+        f.view.openLink = { opened.append($0) }
+        try probe.click(from: probe.point(at: 2))
+        XCTAssertEqual(opened.map(\.absoluteString), ["https://example.com/original"])
+        XCTAssertEqual(f.view.string, "单击直接打开的标题")
+    }
+
+    @MainActor func testClickBesideOrBelowALinkDoesNotOpenTheNearestCharacter() throws {
+        let f = try LinkFixture(); defer { f.clean() }
+        XCTAssertTrue(f.paste("https://example.com/original"))
+        f.loader.complete(0, "短链接")
+        let probe = try NativeLinkClick(view: f.view)
+        defer { probe.close() }
+        var opened: [URL] = []
+        f.view.openLink = { opened.append($0) }
+        try probe.click(from: NSPoint(x: 430, y: 12))
+        try probe.click(from: NSPoint(x: 8, y: 160))
+        XCTAssertTrue(opened.isEmpty, "Nearest-character hit testing must not make empty paper clickable")
+    }
+
+    @MainActor func testDraggingAcrossALinkSelectsTextWithoutOpeningIt() throws {
+        let f = try LinkFixture(); defer { f.clean() }
+        XCTAssertTrue(f.paste("https://example.com/original"))
+        f.loader.complete(0, "拖动链接仍然可以选择文字")
+        let probe = try NativeLinkClick(view: f.view)
+        defer { probe.close() }
+        var opened: [URL] = []
+        f.view.openLink = { opened.append($0) }
+        try probe.click(from: probe.point(at: 0), draggingTo: probe.point(at: 8))
+        XCTAssertTrue(opened.isEmpty)
+        XCTAssertGreaterThan(f.view.selectedRange().length, 0)
+        XCTAssertEqual(f.view.string, "拖动链接仍然可以选择文字")
+    }
+
+    @MainActor func testOptionClickEditsATitleWithoutOpeningTheURL() throws {
+        let f = try LinkFixture(); defer { f.clean() }
+        XCTAssertTrue(f.paste("https://example.com/original"))
+        f.loader.complete(0, "按住选项键编辑标题")
+        let probe = try NativeLinkClick(view: f.view)
+        defer { probe.close() }
+        var opened: [URL] = []
+        f.view.openLink = { opened.append($0) }
+        try probe.click(from: probe.point(at: 3), modifiers: .option)
+        XCTAssertTrue(opened.isEmpty)
+        XCTAssertEqual(f.view.selectedRange().length, 0)
+        XCTAssertGreaterThan(f.view.selectedRange().location, 0)
     }
 
     @MainActor func testNewTextAfterResolvedLinkDoesNotInheritItsTarget() throws {
@@ -268,6 +396,45 @@ final class LinkTitlePasteTests: XCTestCase {
         return AnyCancellable {}
     }
     func complete(_ index: Int, _ title: String?) { callbacks[index](title) }
+}
+
+@MainActor private final class NativeLinkClick: NSObject, NSTextViewDelegate {
+    let view: NotesContinuousTextView
+    let window: NSWindow
+    init(view: NotesContinuousTextView) throws {
+        self.view = view
+        window = NSWindow(contentRect: NSRect(x: -12_000, y: -12_000, width: 480, height: 300),
+                          styleMask: [.borderless], backing: .buffered, defer: false)
+        super.init()
+        window.isReleasedWhenClosed = false
+        window.contentView = view
+        view.delegate = self
+        window.orderFront(nil)
+        window.makeFirstResponder(view)
+        view.layoutManager?.ensureLayout(for: try XCTUnwrap(view.textContainer))
+    }
+    func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
+        true // Never open an external browser from a regression fixture.
+    }
+    func point(at character: Int) throws -> NSPoint {
+        let layout = try XCTUnwrap(view.layoutManager), container = try XCTUnwrap(view.textContainer)
+        layout.ensureLayout(for: container)
+        let glyph = layout.glyphRange(forCharacterRange: NSRange(location: character, length: 1), actualCharacterRange: nil)
+        let rect = layout.boundingRect(forGlyphRange: glyph, in: container)
+        return NSPoint(x: rect.midX + view.textContainerOrigin.x, y: rect.midY + view.textContainerOrigin.y)
+    }
+    func click(from start: NSPoint, draggingTo end: NSPoint? = nil, modifiers: NSEvent.ModifierFlags = []) throws {
+        func event(_ type: NSEvent.EventType, _ point: NSPoint, _ time: TimeInterval) throws -> NSEvent {
+            try XCTUnwrap(NSEvent.mouseEvent(with: type, location: view.convert(point, to: nil), modifierFlags: modifiers,
+                                           timestamp: ProcessInfo.processInfo.systemUptime + time, windowNumber: window.windowNumber,
+                                           context: nil, eventNumber: 1, clickCount: 1, pressure: 1))
+        }
+        let down = try event(.leftMouseDown, start, 0)
+        NSApp.postEvent(try event(.leftMouseUp, end ?? start, 0.1), atStart: true)
+        if let end { NSApp.postEvent(try event(.leftMouseDragged, end, 0.05), atStart: true) }
+        view.mouseDown(with: down)
+    }
+    func close() { view.delegate = nil; window.orderOut(nil) }
 }
 
 @MainActor private final class LinkFixture {

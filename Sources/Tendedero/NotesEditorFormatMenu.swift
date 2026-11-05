@@ -54,6 +54,22 @@ import SwiftUI
         pasteItem.notesDetail = current == "match" ? "匹配样式" : "保留格式"; pasteItem.submenu = paste; menu.addItem(pasteItem)
         return menu
     }
+    static func contextual(_ view: NotesContinuousTextView) -> NSMenu {
+        let menu = NSMenu(title: "段落样式")
+        for (level, title, symbol) in [(0, "正文", "text.alignleft"), (1, "一级标题", "textformat.size.larger"), (2, "二级标题", "textformat.size.smaller")] {
+            let item = ClosureMenuItem(title) { [weak view] in view?.setHeading(level) }.notesSymbol(symbol)
+            item.state = view.selectionHeading == level ? .on : .off
+            menu.addItem(item)
+        }
+        menu.addItem(.separator())
+        for (kind, title, symbol) in [("bullet", "项目列表", "list.bullet"), ("ordered", "有序列表", "list.number"), ("checklist", "待办清单", "checklist")] {
+            let item = ClosureMenuItem(title) { [weak view] in view?.toggleList(kind) }.notesSymbol(symbol)
+            item.state = view.selectionListKind == kind ? .on : .off
+            menu.addItem(item)
+        }
+        return menu
+    }
+
     static func displayMenu(_ current:Double, choose:@escaping(Double)->Void) -> NSMenu {
         let menu = NSMenu()
         for value in [0.75,1.0,1.25,1.5] {

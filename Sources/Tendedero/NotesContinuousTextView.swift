@@ -24,7 +24,15 @@ import UniformTypeIdentifiers
         }
         return changed
     }
+    lazy var contextTools = NotesEditorContextTools(view: self)
+    private var imageEntrance: Timer?
+    private var dropCaret: NSRect?
     var onAttachment: ((NoteAttachment) -> Void)?
+    var onDropTargetChange: (Bool) -> Void = { _ in }
+    private var dropTargeted = false
+    private func showDropTarget(_ targeted: Bool) {
+        guard dropTargeted != targeted else { return }; dropTargeted = targeted; onDropTargetChange(targeted)
+    }
     var loading = false
     private var normalizing = false
     private var renderedWidth: CGFloat = 0
@@ -34,7 +42,7 @@ import UniformTypeIdentifiers
         let actual: NSTextContainer
         if let container { actual = container }
         else {
-            let storage = NSTextStorage(), manager = NSLayoutManager()
+            let storage = NSTextStorage(), manager = NotesBodyLayoutManager()
             actual = NSTextContainer(size:NSSize(width:max(100,frameRect.width),height:.greatestFiniteMagnitude))
             storage.addLayoutManager(manager); manager.addTextContainer(actual)
             ownedStorage = storage
@@ -45,6 +53,7 @@ import UniformTypeIdentifiers
         isAutomaticQuoteSubstitutionEnabled = true; isAutomaticDashSubstitutionEnabled = true
         isAutomaticLinkDetectionEnabled = true
         linkTextAttributes = [.foregroundColor: NSColor(NotesTheme.accent), .underlineStyle: NSUnderlineStyle.single.rawValue]
+        selectedTextAttributes = [.backgroundColor: NotesBodyLayoutManager.selectionColor]
         textContainerInset = NSSize(width: 0, height: 4)
         textContainer?.lineFragmentPadding = 0; textContainer?.widthTracksTextView = true
         isVerticallyResizable = true; isHorizontallyResizable = false
@@ -56,7 +65,11 @@ import UniformTypeIdentifiers
     }
     required init?(coder: NSCoder) { super.init(coder: coder) }
     override func viewWillMove(toWindow newWindow: NSWindow?) {
-        if newWindow == nil { linkPastes.cancelAll() }
+        if newWindow == nil {
+            linkPastes.cancelAll()
+            showDropTarget(false)
+            contextTools.detach()
+        }
         super.viewWillMove(toWindow: newWindow)
     }
     override func scrollRangeToVisible(_ range: NSRange) {
@@ -85,6 +98,7 @@ import UniformTypeIdentifiers
         guard !hasMarkedText() else { return }
         linkPastes.cancelAll()
         loading = true
+        imageEntrance?.invalidate()
         let selection = selectedRange()
         refreshVisibleImages(note)
         textStorage?.setAttributedString(NotesContinuousDocument.render(note, scale:readingScale, width:max(150,bounds.width), image: { self.visibleImages[$0.id] }))
@@ -97,11 +111,26 @@ import UniformTypeIdentifiers
         }
         if length == 0 || selection.location >= length && note.blocks.last?.text.isEmpty == true { typingAttributes = trailingAttributes }
         cleanTypingAttributes()
-        loading = false; onLayout?()
+        loading = false
+        onLayout?()
+        animateNewImages()
+        contextTools.selectionChanged()
     }
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
-        if abs(renderedWidth - newSize.width) > 1 { renderedWidth = newSize.width; onLayout?() }
+        if abs(renderedWidth - newSize.width) > 1 {
+            renderedWidth = newSize.width
+            if let storage = textStorage, let layout = layoutManager, !hasMarkedText() {
+                storage.enumerateAttribute(.attachment, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
+                    if let cell = (value as? NSTextAttachment)?.attachmentCell as? NotesDocumentAttachmentCell,
+                       cell.updateWidth(max(1, newSize.width)) {
+                        layout.invalidateLayout(forCharacterRange: range, actualCharacterRange: nil)
+                    }
+                }
+            }
+            onLayout?()
+            contextTools.selectionChanged()
+        }
     }
     private func attributes(at location: Int) -> [NSAttributedString.Key: Any] {
         guard let storage = textStorage, storage.length > 0, location < storage.length else { return typingAttributes }
@@ -109,7 +138,7 @@ import UniformTypeIdentifiers
     }
     func cleanTypingAttributes() {
         var attrs = typingAttributes
-        for key in [.attachment, .notesMarker, .notesAttachment, .notesAttachmentName, .notesPendingLink] as [NSAttributedString.Key] { attrs.removeValue(forKey:key) }
+        for key in [.attachment, .notesMarker, .notesAttachment, .notesAttachmentName, .notesImageWide, .notesImageCaption, .notesPendingLink] as [NSAttributedString.Key] { attrs.removeValue(forKey:key) }
         let caret = selectedRange()
         var insideLink: URL?
         if caret.length == 0, caret.location > 0, let storage = textStorage, caret.location < storage.length {
@@ -149,7 +178,7 @@ import UniformTypeIdentifiers
             normalizing = false
         }
         super.didChangeText()
-        if !loading, !hasMarkedText() { publishChange(); onLayout?() }
+        if !loading, !hasMarkedText() { publishChange(); onLayout?(); contextTools.selectionChanged() }
     }
     override func insertText(_ insertString: Any, replacementRange: NSRange) {
         cleanTypingAttributes()
@@ -508,6 +537,7 @@ import UniformTypeIdentifiers
         var kind: NoteBlock.Kind; var text: String; var heading: Int; var bullet: Bool
         var checked: Bool; var attachment: UUID?; var styles: [ClipboardStyle]
         var listKind: String? = nil; var listLevel: Int? = nil; var listNumber: Int? = nil
+        var imageWide: Bool? = nil; var imageCaption: String? = nil
     }
     private struct ClipboardAsset: Codable {
         var id: UUID; var name: String; var kind: NoteAttachment.Kind; var bytes: Data; var digest: String
@@ -539,7 +569,7 @@ import UniformTypeIdentifiers
                 }
             }
             let list = NotesListEditing.descriptor(block)
-            return ClipboardBlock(kind: block.kind, text: block.text, heading: block.markdown?.hasPrefix("# ") == true ? 1 : block.markdown?.hasPrefix("## ") == true ? 2 : 0, bullet: list?.kind == "bullet", checked: block.isChecked, attachment: block.attachmentID, styles: styles, listKind: list?.kind, listLevel: list?.level, listNumber: list?.number)
+            return ClipboardBlock(kind: block.kind, text: block.text, heading: block.markdown?.hasPrefix("# ") == true ? 1 : block.markdown?.hasPrefix("## ") == true ? 2 : 0, bullet: list?.kind == "bullet", checked: block.isChecked, attachment: block.attachmentID, styles: styles, listKind: list?.kind, listLevel: list?.level, listNumber: list?.number, imageWide: block.imageWide, imageCaption: block.imageCaption)
         }
     }
     private func clipboardSelection() throws -> ClipboardSelection {
@@ -683,7 +713,7 @@ import UniformTypeIdentifiers
             var replacements: [UUID: NoteAttachment] = [:]
             for (asset, attachment) in zip(payload.assets, additions) { replacements[asset.id] = attachment }
             let blocks = try payload.blocks.map { value -> NoteBlock in
-                if let assetID = value.attachment, let attachment = replacements[assetID] { return NoteBlock(kind: value.kind, text: attachment.name, attachmentID: attachment.id) }
+                if let assetID = value.attachment, let attachment = replacements[assetID] { return NoteBlock(kind: value.kind, text: attachment.name, attachmentID: attachment.id, imageWide: value.imageWide, imageCaption: value.imageCaption.map { String($0.prefix(180)) }) }
                 let rich = NSMutableAttributedString(string: value.text, attributes: [.font: preservePastedFormatting ? NSFont.systemFont(ofSize: NotesContinuousDocument.bodySize * (value.heading == 1 ? 1.65 : value.heading == 2 ? 1.28 : 1)) : unscaledTarget])
                 for style in value.styles {
                     let size = preservePastedFormatting ? style.size : unscaledTarget.pointSize
@@ -751,6 +781,7 @@ import UniformTypeIdentifiers
         return super.performKeyEquivalent(with: event)
     }
     override func keyDown(with event: NSEvent) {
+        contextTools.hide()
         if !handleControlClipboard(event) { super.keyDown(with: event) }
     }
     /// The native destination owns the insertion point, so dragging from the
@@ -766,10 +797,45 @@ import UniformTypeIdentifiers
         return true
     }
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
-        if sender.draggingPasteboard.canReadObject(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) || sender.draggingPasteboard.types?.contains(where: { $0 == .png || $0 == .tiff }) == true { return .copy }
+        if sender.draggingPasteboard.canReadObject(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) || sender.draggingPasteboard.types?.contains(where: { $0 == .png || $0 == .tiff }) == true {
+            guard !hasMarkedText() else { return [] }
+            showDropTarget(true)
+            contextTools.hide()
+            updateDropCaret(sender)
+            return .copy
+        }
+        showDropTarget(false)
         return super.draggingEntered(sender)
     }
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard dropTargeted else { return super.draggingUpdated(sender) }
+        updateDropCaret(sender)
+        return .copy
+    }
+    private func updateDropCaret(_ sender: NSDraggingInfo) {
+        let point = convert(sender.draggingLocation, from: nil)
+        let index = min(string.utf16.count, characterIndexForInsertion(at: point))
+        guard let window else { return }
+        let screen = firstRect(forCharacterRange: NSRange(location: index, length: 0), actualRange: nil)
+        let rect = convert(window.convertFromScreen(screen), from: nil)
+        setDropCaret(rect.isEmpty && rect.height == 0 ? nil : NSRect(x: rect.minX, y: rect.minY, width: 2, height: rect.height))
+    }
+    private func setDropCaret(_ rect: NSRect?) {
+        guard dropCaret != rect else { return }
+        if let old = dropCaret { setNeedsDisplay(old.insetBy(dx: -2, dy: -2)) }
+        dropCaret = rect
+        if let rect { setNeedsDisplay(rect.insetBy(dx: -2, dy: -2)) }
+    }
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        setDropCaret(nil)
+        showDropTarget(false); super.draggingExited(sender)
+    }
+    override func concludeDragOperation(_ sender: NSDraggingInfo?) {
+        setDropCaret(nil)
+        showDropTarget(false); super.concludeDragOperation(sender)
+    }
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        defer { setDropCaret(nil); showDropTarget(false) }
         if importDroppedContent(from: sender.draggingPasteboard, at: convert(sender.draggingLocation, from: nil)) { return true }
         return super.performDragOperation(sender)
     }
@@ -801,7 +867,124 @@ import UniformTypeIdentifiers
         if let image = NSImage(pasteboard:board) { session?.pasteImage(image); return true }
         return false
     }
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        if let dropCaret {
+            NSColor(NotesTheme.accent).setFill()
+            NSBezierPath(roundedRect: dropCaret, xRadius: 1, yRadius: 1).fill()
+        }
+        guard string.isEmpty, !hasMarkedText() else { return }
+        let hint = "写下一点想法，或粘贴、拖入图片…"
+        hint.draw(in: NSRect(x: textContainerOrigin.x, y: textContainerOrigin.y,
+                             width: max(0, bounds.width - textContainerOrigin.x), height: 52 * readingScale),
+                  withAttributes: [.font: NSFont.systemFont(ofSize: NotesContinuousDocument.bodySize * readingScale),
+                                   .foregroundColor: NSColor.placeholderTextColor])
+    }
+    override func interactionHint(at point: NSPoint) -> String? {
+        if let location = character(at: point) {
+            let attrs = attributes(at: location)
+            if attrs[.notesMarker] as? Bool == true, attrs[.notesKind] as? String == "checklist" { return "点击切换完成状态" }
+            if let id = (attrs[.notesAttachment] as? String).flatMap(UUID.init(uuidString:)),
+               let attachment = session?.note.attachments.first(where: { $0.id == id }) {
+                return attachment.kind == .image ? "点按查看大图 · 右键复制或导出" : "点按打开附件 · 右键查看更多操作"
+            }
+        }
+        return super.interactionHint(at: point)
+    }
+    override func interactionCursor(at point: NSPoint, modifiers: NSEvent.ModifierFlags) -> NSCursor {
+        if contextTools.hasButton(at: point) { return .pointingHand }
+        if let location = character(at: point) {
+            let attrs = attributes(at: location)
+            if attrs[.notesMarker] as? Bool == true, attrs[.notesKind] as? String == "checklist" { return .pointingHand }
+            if let id = (attrs[.notesAttachment] as? String).flatMap(UUID.init(uuidString:)),
+               session?.note.attachments.contains(where: { $0.id == id }) == true { return .pointingHand }
+        }
+        return super.interactionCursor(at: point, modifiers: modifiers)
+    }
+    override func mouseMoved(with event: NSEvent) {
+        super.mouseMoved(with: event)
+        guard contextTools.enabled, session?.note.attachments.isEmpty == false else { return }
+        let point = convert(event.locationInWindow, from: nil)
+        let index = character(at: point)
+        let id = index.flatMap { (attributes(at: $0)[.notesAttachment] as? String).flatMap(UUID.init(uuidString:)) }
+        let attachment = session?.note.attachments.first { $0.id == id }
+        contextTools.mouseMoved(to: point, attachment: attachment, at: index)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        super.mouseExited(with: event)
+        if !visibleRect.contains(convert(event.locationInWindow, from: nil)) { contextTools.hide() }
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        contextTools.hide()
+        super.scrollWheel(with: event)
+    }
+
+    override func resignFirstResponder() -> Bool {
+        let result = super.resignFirstResponder()
+        if result { contextTools.selectionChanged() }
+        return result
+    }
+
+    func applyContextLink(_ url: URL?, to range: NSRange) {
+        guard !hasMarkedText(), let storage = textStorage, range.length > 0,
+              NSMaxRange(range) <= storage.length else { return }
+        setSelectedRange(range)
+        guard let url else { removeLink(in: range); return }
+        guard shouldChangeText(in: range, replacementString: nil) else { return }
+        session?.captureBodySelection(range)
+        session?.endTypingGroup()
+        storage.removeAttribute(.notesPendingLink, range: range)
+        storage.addAttributes([.link: url, .toolTip: url.absoluteString], range: range)
+        didChangeText()
+        session?.endTypingGroup()
+    }
+
+    private func animateNewImages() {
+        guard let session, !session.pendingImageInsertions.isEmpty, let storage = textStorage,
+              let layout = layoutManager, let container = textContainer else { return }
+        let retained = Set(session.note.attachments.map(\.id))
+        session.pendingImageInsertions.formIntersection(retained)
+        if NotesMotion.reduced {
+            session.pendingImageInsertions.removeAll()
+            return
+        }
+        var cells: [NotesDocumentAttachmentCell] = []
+        var dirty = NSRect.null
+        storage.enumerateAttribute(.attachment, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
+            guard let cell = (value as? NSTextAttachment)?.attachmentCell as? NotesDocumentAttachmentCell,
+                  cell.previewImage != nil,
+                  let id = (storage.attribute(.notesAttachment, at: range.location, effectiveRange: nil) as? String).flatMap(UUID.init(uuidString:)),
+                  session.pendingImageInsertions.remove(id) != nil else { return }
+            let glyph = layout.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+            let rect = layout.boundingRect(forGlyphRange: glyph, in: container)
+                .offsetBy(dx: textContainerOrigin.x, dy: textContainerOrigin.y)
+            guard visibleRect.intersects(rect) else { return }
+            cell.entranceProgress = 0
+            cells.append(cell)
+            dirty = dirty.union(rect)
+        }
+        guard !cells.isEmpty else { return }
+        let animatedCells = cells
+        let dirtyRect = dirty
+        let start = ProcessInfo.processInfo.systemUptime
+        imageEntrance = Timer.scheduledTimer(withTimeInterval: 1.0 / 60, repeats: true) { [weak self] timer in
+            MainActor.assumeIsolated {
+                let progress = NotesMotion.reduced || self?.window == nil
+                    ? 1 : min(1, (ProcessInfo.processInfo.systemUptime - start) / 0.18)
+                for cell in animatedCells { cell.entranceProgress = CGFloat(1 - pow(1 - progress, 2)) }
+                self?.setNeedsDisplay(dirtyRect)
+                if progress == 1 { timer.invalidate(); self?.imageEntrance = nil }
+            }
+        }
+    }
+
     override func mouseDown(with event: NSEvent) {
+        contextTools.trackingSelection = true
+        contextTools.hide()
+        defer { contextTools.trackingSelection = false; contextTools.selectionChanged() }
+        if event.modifierFlags.contains(.control) { rightMouseDown(with: event); return }
         if let location = character(at:event) {
             let attrs = attributes(at:location)
             if attrs[.notesMarker] as? Bool == true, attrs[.notesKind] as? String == "checklist", let storage = textStorage {
@@ -816,9 +999,10 @@ import UniformTypeIdentifiers
         }
         super.mouseDown(with:event)
     }
-    private func character(at event:NSEvent) -> Int? {
+    private func character(at event:NSEvent) -> Int? { character(at: convert(event.locationInWindow, from: nil)) }
+    private func character(at point: NSPoint) -> Int? {
         guard let layoutManager, let textContainer, (textStorage?.length ?? 0) > 0 else { return nil }
-        let point = convert(event.locationInWindow,from:nil), local = NSPoint(x:point.x - textContainerOrigin.x,y:point.y - textContainerOrigin.y)
+        let local = NSPoint(x:point.x - textContainerOrigin.x,y:point.y - textContainerOrigin.y)
         let index = layoutManager.characterIndex(for:local,in:textContainer,fractionOfDistanceBetweenInsertionPoints:nil)
         guard index < textStorage!.length else { return nil }
         let glyph = layoutManager.glyphRange(forCharacterRange:NSRange(location:index,length:1),actualCharacterRange:nil)
@@ -858,6 +1042,57 @@ import UniformTypeIdentifiers
         let selection = selectedRange()
         if selection.length == 0 { return [typingAttributes[key] ?? attributes(at:selection.location)[key] ?? 0] }
         var values:[Any] = []; textStorage?.enumerateAttribute(key,in:selection) { value,_,_ in if let value { values.append(value) } }; return values
+    }
+}
+
+/// Keep the document's line spacing, but paint the selection around the text
+/// baseline rather than filling the extra space in each TextKit line.
+private final class NotesBodyLayoutManager: NSLayoutManager {
+    static let selectionColor = NSColor(NotesTheme.adaptive(0xC8D7F3, 0x536E9E))
+    private var drawingOrigin = NSPoint.zero
+
+    override func drawBackground(forGlyphRange glyphsToShow: NSRange, at origin: NSPoint) {
+        drawingOrigin = origin
+        super.drawBackground(forGlyphRange: glyphsToShow, at: origin)
+    }
+
+    override func fillBackgroundRectArray(_ rectArray: UnsafePointer<NSRect>, count rectCount: Int,
+                                          forCharacterRange charRange: NSRange, color: NSColor) {
+        guard let container = textContainers.first, let view = container.textView,
+              !view.hasMarkedText(), charRange.length > 0,
+              NSIntersectionRange(charRange, view.selectedRange()) == charRange,
+              color == Self.selectionColor || color == .selectedTextBackgroundColor ||
+                color == .unemphasizedSelectedTextBackgroundColor,
+              let storage = textStorage, NSMaxRange(charRange) <= storage.length else {
+            super.fillBackgroundRectArray(rectArray, count: rectCount, forCharacterRange: charRange, color: color)
+            return
+        }
+        let rects = UnsafeBufferPointer(start: rectArray, count: rectCount).map { rect in
+            let point = NSPoint(x: rect.midX - drawingOrigin.x, y: rect.midY - drawingOrigin.y)
+            let index = glyphIndex(for: point, in: container)
+            guard index < numberOfGlyphs else { return rect }
+            var lineGlyphs = NSRange()
+            let line = lineFragmentRect(forGlyphAt: index, effectiveRange: &lineGlyphs)
+            let characters = NSIntersectionRange(charRange, characterRange(forGlyphRange: lineGlyphs, actualGlyphRange: nil))
+            guard characters.length > 0 else { return rect }
+            var font: NSFont?
+            var includesAttachment = false
+            storage.enumerateAttributes(in: characters) { attributes, _, stop in
+                if attributes[.attachment] != nil { includesAttachment = true; stop.pointee = true }
+                if let candidate = attributes[.font] as? NSFont, candidate.pointSize > (font?.pointSize ?? 0) { font = candidate }
+            }
+            guard let font, !includesAttachment else { return rect }
+            let baseline = drawingOrigin.y + line.minY + location(forGlyphAt: index).y
+            let height = min(rect.height, ceil(font.ascender - font.descender) + 2)
+            let center = baseline - (font.ascender + font.descender) / 2
+            let y = min(max(center - height / 2, rect.minY), rect.maxY - height)
+            return NSRect(x: rect.minX, y: y, width: rect.width, height: height)
+        }
+        rects.withUnsafeBufferPointer { rects in
+            if let start = rects.baseAddress {
+                super.fillBackgroundRectArray(start, count: rects.count, forCharacterRange: charRange, color: color)
+            }
+        }
     }
 }
 private extension Bool { var intValue:Int { self ? 1 : 0 } }

@@ -9,6 +9,10 @@ struct NoteEditorView: View {
     @AppStorage("notesReadingScale") private var readingScale = 1.0
     @State private var bodyHeight: CGFloat = 140
     @State private var preview: NoteAttachment?
+    @State private var nativeDropTargeted = false
+    @State private var surfaceDropTargeted = false
+    @State private var importingDrop = false
+    private var dropTargeted: Bool { nativeDropTargeted || surfaceDropTargeted }
     @ObservedObject private var images = NotesImageCache.shared
     private var displayScale: CGFloat { CGFloat(min(2, max(0.75, readingScale))) }
     var body: some View {
@@ -27,7 +31,8 @@ struct NoteEditorView: View {
                                     if let url = try? session.localURL(for: attachment), images.hasFailed(url) { images.retry(url) }
                                     else { preview = attachment }
                                 } else { session.openAttachment(attachment) }
-                            }).frame(height: max(bodyHeight, viewport.size.height - 90 * displayScale))
+                            }, onDropTargetChange: { nativeDropTargeted = $0 })
+                            .frame(height: max(bodyHeight, viewport.size.height - 90 * displayScale))
                             if let failure = session.attachmentFailure {
                                 HStack(alignment: .top, spacing: 10) {
                                     Image(systemName: "exclamationmark.circle")
@@ -61,7 +66,27 @@ struct NoteEditorView: View {
             .overlay(alignment: .trailing) { NotesEditorResizeHandle(axis: .horizontal).frame(width: 7).padding(.vertical, 28) }
             .overlay(alignment: .bottom) { NotesEditorResizeHandle(axis: .vertical).frame(height: 7).padding(.horizontal, 28) }
             .overlay(alignment: .bottomTrailing) { NotesEditorResizeHandle(axis: .both).frame(width: 22,height: 22).padding(6) }
-            .onDrop(of: [.fileURL, .image], isTargeted: nil, perform: drop)
+            .overlay {
+                RoundedRectangle(cornerRadius: 28, style: .continuous)
+                    .fill(NotesTheme.accent.opacity(dropTargeted ? 0.035 : 0))
+                    .overlay { RoundedRectangle(cornerRadius: 28, style: .continuous)
+                        .strokeBorder(NotesTheme.accent.opacity(dropTargeted ? 0.55 : 0), lineWidth: 1.5) }
+                    .allowsHitTesting(false).accessibilityHidden(true)
+            }
+            .overlay(alignment: .bottom) {
+                if dropTargeted || importingDrop {
+                    Label(importingDrop ? "正在添加…" : "松开，添加到闪念", systemImage: importingDrop ? "photo" : "arrow.down.to.line")
+                        .font(.system(size: 12, weight: .medium)).foregroundStyle(NotesTheme.accent)
+                        .padding(.horizontal, 14).padding(.vertical, 9)
+                        .background(.regularMaterial, in: Capsule())
+                        .overlay { Capsule().strokeBorder(NotesTheme.accent.opacity(0.15), lineWidth: 1) }
+                        .padding(.bottom, 78).allowsHitTesting(false)
+                        .transition(NotesMotion.reduced ? .identity : .opacity.combined(with: .offset(y: 4)))
+                }
+            }
+            .animation(NotesMotion.standard, value: dropTargeted)
+            .animation(NotesMotion.quick, value: importingDrop)
+            .onDrop(of: [.fileURL, .image], isTargeted: $surfaceDropTargeted, perform: drop)
             .sheet(item: $preview) { attachment in
                 NotesImagePreview(name: attachment.name, image: attachmentImage(attachment),
                     sourceURL: try? session.localURL(for: attachment),
@@ -79,6 +104,9 @@ struct NoteEditorView: View {
                     if !compact { Text("闪念").font(.system(size: 14, weight: .medium)) }
                     Text(saveStatus)
                         .font(.system(size: 11)).foregroundStyle(session.failure == nil ? NotesTheme.muted : NotesTheme.danger)
+                        .frame(minWidth: 70, alignment: .leading)
+                        .contentTransition(.opacity)
+                        .animation(NotesMotion.quick, value: saveStatus)
                         .accessibilityLabel(saveLabel)
                     Spacer()
                 }.allowsHitTesting(false)
@@ -155,7 +183,9 @@ struct NoteEditorView: View {
     }
     private func drop(_ providers: [NSItemProvider]) -> Bool {
         guard providers.contains(where: { $0.hasItemConformingToTypeIdentifier("public.file-url") || $0.canLoadObject(ofClass: NSImage.self) }) else { return false }
+        importingDrop = true
         Task { @MainActor in
+            defer { importingDrop = false; nativeDropTargeted = false; surfaceDropTargeted = false }
             do { session.appendDroppedItems(try await NotesEditorDrop.load(providers)) }
             catch { session.reportAttachmentFailure("拖入未完成：" + error.localizedDescription) }
         }

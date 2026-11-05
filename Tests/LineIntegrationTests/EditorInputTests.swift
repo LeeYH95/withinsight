@@ -19,8 +19,8 @@ final class EditorInputTests: XCTestCase {
         }
         try run(view, session, root)
     }
-    @MainActor private func png() throws -> Data {
-        let bitmap = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 12, pixelsHigh: 8, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+    @MainActor private func png(width: Int = 12) throws -> Data {
+        let bitmap = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: 8, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
         NSColor.blue.setFill()
         return try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
     }
@@ -53,6 +53,45 @@ final class EditorInputTests: XCTestCase {
             for image in session.note.attachments { XCTAssertEqual(try Data(contentsOf: session.store.url(for: image)), bytes) }
         }
     }
+    @MainActor func testImageLayoutAndCaptionSurviveReplacementUndoAndTextKitRoundTrip() throws {
+        try withEditor { view, session, root in
+            let original = root.appendingPathComponent("original.png")
+            let replacement = root.appendingPathComponent("replacement.png")
+            let pixels = try png()
+            let replacementPixels = try png(width: 24)
+            try pixels.write(to: original)
+            try replacementPixels.write(to: replacement)
+            session.importURLs([original])
+            let oldID = try XCTUnwrap(session.note.attachments.first?.id)
+            session.updateImageLayout(oldID, wide: true)
+            session.updateImageCaption(oldID, caption: "雾蓝纸面的参考图")
+            try session.commit()
+            let oldBlock = try XCTUnwrap(session.note.blocks.first { $0.kind == .image })
+            session.undoManager.removeAllActions()
+            session.replaceImage(oldID, from: replacement)
+            let newBlock = try XCTUnwrap(session.note.blocks.first { $0.kind == .image })
+            XCTAssertNotEqual(newBlock.attachmentID, oldID)
+            XCTAssertEqual(newBlock.id, oldBlock.id)
+            XCTAssertEqual(newBlock.imageWide, true)
+            XCTAssertEqual(newBlock.imageCaption, oldBlock.imageCaption)
+            view.loadDocument(session.note)
+            let roundTrip = try NotesContinuousDocument.blocks(from: view.attributedString())
+            XCTAssertEqual(roundTrip.first { $0.kind == .image }?.imageCaption, oldBlock.imageCaption)
+            XCTAssertEqual(roundTrip.first { $0.kind == .image }?.imageWide, true)
+            session.undo()
+            try session.commit()
+            let restored = try XCTUnwrap(session.note.attachments.first)
+            XCTAssertEqual(restored.name, original.lastPathComponent)
+            XCTAssertEqual(try Data(contentsOf: session.store.url(for: restored)), pixels)
+            XCTAssertEqual(session.note.blocks.first { $0.kind == .image }?.imageCaption, oldBlock.imageCaption)
+            session.redo()
+            try session.commit()
+            let redone = try XCTUnwrap(session.note.attachments.first)
+            XCTAssertEqual(redone.name, replacement.lastPathComponent)
+            XCTAssertEqual(try Data(contentsOf: session.store.url(for: redone)), replacementPixels)
+        }
+    }
+
     @MainActor func testMatchPasteUsesInsertionFontAndRemovesSourceBackground() throws {
         try withEditor { view, _, _ in
             view.typingAttributes = [.font: NSFont.systemFont(ofSize: 24, weight: .semibold), .foregroundColor: NSColor(NotesTheme.text)]
@@ -79,6 +118,24 @@ final class EditorInputTests: XCTestCase {
             let paste = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .control, timestamp: 0, windowNumber: 0, context: nil, characters: "v", charactersIgnoringModifiers: "v", isARepeat: false, keyCode: 9))
             XCTAssertTrue(view.performKeyEquivalent(with: paste))
             XCTAssertEqual(session.note.attachments.count, 2)
+        }
+    }
+    @MainActor func testDropFeedbackClearsAfterCancelAndAfterOneSuccessfulImport() throws {
+        try withEditor { view, session, root in
+            let file = root.appendingPathComponent("drag-feedback.png"), bytes = try png(); try bytes.write(to: file)
+            let board = NSPasteboard.withUniqueName(); defer { board.releaseGlobally() }
+            board.writeObjects([file as NSURL])
+            let drag = EditorDragInfo(board: board)
+            var states: [Bool] = []; view.onDropTargetChange = { states.append($0) }
+            XCTAssertEqual(view.draggingEntered(drag), .copy)
+            view.draggingExited(drag)
+            XCTAssertEqual(states, [true, false]); XCTAssertTrue(session.note.attachments.isEmpty)
+            XCTAssertEqual(view.draggingEntered(drag), .copy)
+            XCTAssertTrue(view.performDragOperation(drag)); view.concludeDragOperation(drag)
+            XCTAssertEqual(states, [true, false, true, false])
+            XCTAssertEqual(session.note.attachments.count, 1)
+            XCTAssertEqual(try Data(contentsOf: session.store.url(for: session.note.attachments[0])), bytes)
+            XCTAssertEqual(try Data(contentsOf: file), bytes)
         }
     }
     @MainActor func testRopeFileDropCopiesOwnedBytesAtThePointerWithoutReplacingSelectedText() throws {
@@ -157,4 +214,24 @@ final class EditorInputTests: XCTestCase {
             }
         }
     }
+}
+
+@MainActor private final class EditorDragInfo: NSObject, NSDraggingInfo {
+    let draggingPasteboard: NSPasteboard
+    init(board: NSPasteboard) { draggingPasteboard = board }
+    var draggingDestinationWindow: NSWindow? { nil }
+    var draggingSourceOperationMask: NSDragOperation { .copy }
+    var draggingLocation: NSPoint { NSPoint(x: 300, y: 10) }
+    var draggedImageLocation: NSPoint { .zero }
+    nonisolated var draggedImage: NSImage? { nil }
+    var draggingSource: Any? { nil }
+    var draggingSequenceNumber: Int { 1 }
+    var draggingFormation: NSDraggingFormation = .default
+    var animatesToDestination = false
+    var numberOfValidItemsForDrop = 1
+    var springLoadingHighlight: NSSpringLoadingHighlight { .none }
+    func resetSpringLoading() {}
+    func slideDraggedImage(to screenPoint: NSPoint) {}
+    nonisolated override func namesOfPromisedFilesDropped(atDestination dropDestination: URL) -> [String]? { nil }
+    func enumerateDraggingItems(options enumOpts: NSDraggingItemEnumerationOptions = [], for view: NSView?, classes classArray: [AnyClass], searchOptions: [NSPasteboard.ReadingOptionKey: Any] = [:], using block: (NSDraggingItem, Int, UnsafeMutablePointer<ObjCBool>) -> Void) {}
 }
