@@ -406,16 +406,13 @@ final class LinkTitlePasteTests: XCTestCase {
     private(set) var lastTrace = ""
     init(view: NotesContinuousTextView) throws {
         self.view = view
-        // Posted events for off-screen, non-key windows can be returned in
-        // global coordinates on older AppKit. Match the real editor window.
-        let origin = NSScreen.main?.visibleFrame.origin ?? .zero
-        window = NotesWindow(contentRect: NSRect(x: origin.x + 40, y: origin.y + 40, width: 480, height: 300),
-                             styleMask: [.borderless], backing: .buffered, defer: false)
+        window = NSWindow(contentRect: NSRect(x: -12_000, y: -12_000, width: 480, height: 300),
+                          styleMask: [.borderless], backing: .buffered, defer: false)
         super.init()
         window.isReleasedWhenClosed = false
         window.contentView = view
         view.delegate = self
-        window.makeKeyAndOrderFront(nil)
+        window.orderFront(nil)
         window.makeFirstResponder(view)
         view.layoutManager?.ensureLayout(for: try XCTUnwrap(view.textContainer))
     }
@@ -431,13 +428,31 @@ final class LinkTitlePasteTests: XCTestCase {
     }
     func click(from start: NSPoint, draggingTo end: NSPoint? = nil, modifiers: NSEvent.ModifierFlags = []) throws {
         func event(_ type: NSEvent.EventType, _ point: NSPoint, _ time: TimeInterval) throws -> NSEvent {
-            try XCTUnwrap(NSEvent.mouseEvent(with: type, location: view.convert(point, to: nil), modifierFlags: modifiers,
+            try XCTUnwrap(NSEvent.mouseEvent(with: type, location: point, modifierFlags: modifiers,
                                            timestamp: ProcessInfo.processInfo.systemUptime + time, windowNumber: window.windowNumber,
                                            context: nil, eventNumber: 1, clickCount: 1, pressure: 1))
         }
-        let down = try event(.leftMouseDown, start, 0)
-        NSApp.postEvent(try event(.leftMouseUp, end ?? start, 0.1), atStart: true)
-        if let end { NSApp.postEvent(try event(.leftMouseDragged, end, 0.05), atStart: true) }
+        func post(_ type: NSEvent.EventType, _ point: NSPoint, _ time: TimeInterval) throws {
+            let location = view.convert(point, to: nil)
+            let mask = NSEvent.EventTypeMask(rawValue: 1 << type.rawValue)
+            NSApp.postEvent(try event(type, location, time), atStart: true)
+            let queued = try XCTUnwrap(NSApp.nextEvent(matching: mask, until: .distantPast, inMode: .eventTracking, dequeue: false))
+            // Some AppKit versions translate synthetic events when queued.
+            // Compensate that translation, then verify the real queued point.
+            let offset = NSPoint(x: queued.locationInWindow.x - location.x, y: queued.locationInWindow.y - location.y)
+            if hypot(offset.x, offset.y) > 0.01 {
+                _ = NSApp.nextEvent(matching: mask, until: .distantPast, inMode: .eventTracking, dequeue: true)
+                let corrected = NSPoint(x: location.x - offset.x, y: location.y - offset.y)
+                NSApp.postEvent(try event(type, corrected, time), atStart: true)
+            }
+            let actual = try XCTUnwrap(NSApp.nextEvent(matching: mask, until: .distantPast, inMode: .eventTracking, dequeue: false))
+            XCTAssertEqual(actual.windowNumber, window.windowNumber)
+            XCTAssertEqual(actual.locationInWindow.x, location.x, accuracy: 0.01)
+            XCTAssertEqual(actual.locationInWindow.y, location.y, accuracy: 0.01)
+        }
+        let down = try event(.leftMouseDown, view.convert(start, to: nil), 0)
+        try post(.leftMouseUp, end ?? start, 0.1)
+        if let end { try post(.leftMouseDragged, end, 0.05) }
         let queued = NSApp.nextEvent(matching: [.leftMouseUp, .leftMouseDragged], until: .distantPast,
                                      inMode: .eventTracking, dequeue: false)
         lastTrace = "downWindow=\(down.windowNumber) queuedWindow=\(queued?.windowNumber ?? -1) start=\(start) queuedPoint=\(queued.map { view.convert($0.locationInWindow, from: nil) } ?? .zero) bounds=\(view.bounds) hit=\(view.linkContext(at: start)?.url.absoluteString ?? "none")"
