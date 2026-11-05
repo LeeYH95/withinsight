@@ -55,10 +55,28 @@ final class EditorImageStabilityTests: XCTestCase {
         let host = NSHostingView(rootView: NoteEditorView(session: session, workspace: NotesWorkspace(store: store), expand: {}))
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 650, height: 480), styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false; window.contentView = host
+        window.orderFront(nil)
         defer { window.orderOut(nil) }
         func body(in parent: NSView) -> NotesContinuousTextView? {
             (parent as? NotesContinuousTextView) ?? parent.subviews.lazy.compactMap { body(in: $0) }.first
         }
+        func readyImages() -> Int {
+            guard let view = body(in: host) else { return 0 }
+            var ready = 0
+            view.attributedString().enumerateAttribute(.attachment, in: NSRange(location: 0, length: view.string.utf16.count)) { token, _, _ in
+                if let cell = (token as? NSTextAttachment)?.attachmentCell as? NotesDocumentAttachmentCell,
+                   cell.previewImage != nil { ready += 1 }
+            }
+            return ready
+        }
+        // Start measuring settled layouts only after the asynchronous image
+        // tasks have produced pixels, rather than assuming a fixed load time.
+        let deadline = Date().addingTimeInterval(3)
+        while readyImages() < 2, Date() < deadline {
+            host.layoutSubtreeIfNeeded()
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        XCTAssertEqual(readyImages(), 2, "Both native image cells must load before measuring stability")
         var heights: [CGFloat] = []
         for i in 0..<30 {
             host.layoutSubtreeIfNeeded()
