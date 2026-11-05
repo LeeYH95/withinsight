@@ -93,11 +93,16 @@ struct LineView: View {
                     ScreenshotClearResult(line: line)
                         .position(x: width / 2, y: geo.size.height - 23)
                         .transition(.opacity)
+                } else if line.screenshotClear == nil, !line.copiedImagesUndoIDs.isEmpty {
+                    CopiedImagesResult(line: line)
+                        .position(x: width / 2, y: geo.size.height - 23)
+                        .transition(.opacity)
                 }
             }
             .animation(HangingMotion.reduced ? nil : .spring(response: 0.55, dampingFraction: 0.78), value: line.items.map(\.id))
             .animation(HangingMotion.reduced ? nil : .easeInOut(duration: 0.3), value: line.items.isEmpty)
             .animation(HangingMotion.reduced ? nil : .easeOut(duration: 0.15), value: line.screenshotClearUndoCount)
+            .animation(HangingMotion.reduced ? nil : .easeOut(duration: 0.15), value: line.copiedImagesUndoIDs)
             // Tucked away, the whole line waits above the top edge and slides
             // out from under the menu bar, the way an auto-hiding Dock does.
             .offset(y: line.revealed ? 0 : -(Layout.panelHeight + 12))

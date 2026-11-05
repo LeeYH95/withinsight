@@ -13,9 +13,12 @@ public struct NoteBlock: Identifiable, Codable, Equatable, Sendable {
     public var markdown: String?
     public var isChecked: Bool
     public var attachmentID: UUID?
-    public init(id: UUID = UUID(), kind: Kind = .paragraph, text: String = "", richText: Data? = nil, markdown: String? = nil, isChecked: Bool = false, attachmentID: UUID? = nil) {
+    public var imageWide: Bool?
+    public var imageCaption: String?
+    public init(id: UUID = UUID(), kind: Kind = .paragraph, text: String = "", richText: Data? = nil, markdown: String? = nil, isChecked: Bool = false, attachmentID: UUID? = nil, imageWide: Bool? = nil, imageCaption: String? = nil) {
         self.id = id; self.kind = kind; self.text = text; self.richText = richText
         self.markdown = markdown; self.isChecked = isChecked; self.attachmentID = attachmentID
+        self.imageWide = imageWide; self.imageCaption = imageCaption
     }
 }
 
@@ -55,5 +58,5 @@ public struct NoteDocument: Identifiable, Codable, Equatable, Sendable {
         let explicitTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         return explicitTitle.isEmpty ? "未命名闪念" : explicitTitle
     }
-    public var plainText: String { blocks.map(\.text).joined(separator: "\n") }
+    public var plainText: String { blocks.flatMap { [$0.text, $0.imageCaption].compactMap { $0 } }.joined(separator: "\n") }
 }

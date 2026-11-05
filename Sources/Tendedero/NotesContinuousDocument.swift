@@ -8,10 +8,12 @@ extension NSAttributedString.Key {
     static let notesHeading = NSAttributedString.Key("shipian.heading")
     static let notesAttachment = NSAttributedString.Key("shipian.attachment")
     static let notesAttachmentName = NSAttributedString.Key("shipian.attachmentName")
+    static let notesImageWide = NSAttributedString.Key("shipian.imageWide")
+    static let notesImageCaption = NSAttributedString.Key("shipian.imageCaption")
     static let notesMarker = NSAttributedString.Key("shipian.marker")
 }
 
-/// TextKit presentation of the existing block format. No new storage schema or web bridge.
+/// TextKit presentation of the note blocks.
 @MainActor enum NotesContinuousDocument {
     static let bodySize: CGFloat = 15
     static func render(_ note: NoteDocument, scale: CGFloat = 1, width: CGFloat = 500, image: (NoteAttachment) -> NSImage? = { _ in nil }) -> NSAttributedString {
@@ -25,9 +27,11 @@ extension NSAttributedString.Key {
             let content: NSMutableAttributedString
             if block.kind == .image || block.kind == .file {
                 let attachment = note.attachments.first { $0.id == block.attachmentID }
-                let cell = NotesDocumentAttachmentCell(name: attachment?.name ?? block.text, image: attachment.flatMap(image), imageKind: block.kind == .image, width: min(380 * scale, width), scale: scale)
+                let cell = NotesDocumentAttachmentCell(name: attachment?.name ?? block.text, image: attachment.flatMap(image), imageKind: block.kind == .image, width: width, scale: scale, wide: block.imageWide == true, caption: block.imageCaption)
                 let token = NSTextAttachment(); token.attachmentCell = cell
                 content = NSMutableAttributedString(attachment: token)
+                if let wide = block.imageWide { metadata[.notesImageWide] = wide }
+                if let caption = block.imageCaption { metadata[.notesImageCaption] = caption }
                 content.addAttributes([.notesAttachment:block.attachmentID?.uuidString ?? "", .notesAttachmentName:block.text], range: NSRange(location: 0, length: content.length))
             } else {
                 if let data = block.richText, let rich = NSAttributedString(rtf: data, documentAttributes: nil), rich.string == block.text {
@@ -197,7 +201,7 @@ extension NSAttributedString.Key {
             while !seen.insert(id).inserted { id = UUID() }
             let attrs = value.attributes(at: min(part.range.location, value.length - 1), effectiveRange: nil)
             if part.kind == "image" || part.kind == "file" {
-                blocks.append(NoteBlock(id:id, kind:part.kind == "image" ? .image : .file, text:attrs[.notesAttachmentName] as? String ?? "附件", attachmentID:(attrs[.notesAttachment] as? String).flatMap(UUID.init(uuidString:))))
+                blocks.append(NoteBlock(id:id, kind:part.kind == "image" ? .image : .file, text:attrs[.notesAttachmentName] as? String ?? "附件", attachmentID:(attrs[.notesAttachment] as? String).flatMap(UUID.init(uuidString:)), imageWide: attrs[.notesImageWide] as? Bool, imageCaption: attrs[.notesImageCaption] as? String))
                 continue
             }
             let body = NSMutableAttributedString(attributedString: value.attributedSubstring(from: part.range))
@@ -207,7 +211,7 @@ extension NSAttributedString.Key {
             let original = NSAttributedString(attributedString: body)
             original.enumerateAttributes(in: NSRange(location: 0, length: original.length)) { attributes, range, _ in
                 if let font = attributes[.font] as? NSFont { body.addAttribute(.font, value:NSFontManager.shared.convert(font, toSize:font.pointSize / max(0.1, scale)), range:range) }
-                for key in [.notesBlock, .notesKind, .notesChecked, .notesHeading, .notesAttachment, .notesAttachmentName, .notesMarker, .notesPendingLink, .notesListLevel, .notesListNumber, .notesListStart, .notesListStartLevel] as [NSAttributedString.Key] { body.removeAttribute(key, range:range) }
+                for key in [.notesBlock, .notesKind, .notesChecked, .notesHeading, .notesAttachment, .notesAttachmentName, .notesImageWide, .notesImageCaption, .notesMarker, .notesPendingLink, .notesListLevel, .notesListNumber, .notesListStart, .notesListStartLevel] as [NSAttributedString.Key] { body.removeAttribute(key, range:range) }
             }
             var markdown = RichNoteTextView.Coordinator.markdown(body)
             if part.heading > 0 { markdown = String(repeating:"#", count:part.heading) + " " + markdown }
@@ -252,39 +256,87 @@ extension NSAttributedString.Key {
     let name: String
     let previewImage: NSImage?
     let imageKind: Bool
-    let displaySize: NSSize
-    init(name: String, image: NSImage?, imageKind: Bool, width: CGFloat, scale: CGFloat) {
+    let wide: Bool
+    let caption: String?
+    let scale: CGFloat
+    private(set) var imageSize: NSSize = .zero
+    // TextKit queries cellSize through the nonisolated NSCell API.
+    nonisolated(unsafe) private(set) var displaySize: NSSize = .zero
+    var entranceProgress: CGFloat = 1
+
+    init(name: String, image: NSImage?, imageKind: Bool, width: CGFloat, scale: CGFloat,
+         wide: Bool = false, caption: String? = nil) {
         self.name = name; previewImage = image; self.imageKind = imageKind
-        if let image, imageKind, image.size.width > 0 {
-            let w = min(width, image.size.width * scale)
-            displaySize = NSSize(width:w,height:w * image.size.height / image.size.width)
-        } else { displaySize = NSSize(width:max(150,min(width,470 * scale)),height:(imageKind ? 110 : 68) * scale) }
+        self.wide = wide; self.caption = caption; self.scale = scale
         super.init(textCell: "")
+        updateWidth(width)
     }
+
     required init(coder: NSCoder) {
-        name = coder.decodeObject(forKey:"shipian.name") as? String ?? "附件"
-        previewImage = coder.decodeObject(forKey:"shipian.preview") as? NSImage
-        imageKind = coder.decodeBool(forKey:"shipian.image")
-        displaySize = coder.decodeSize(forKey:"shipian.size")
-        super.init(coder:coder)
+        name = coder.decodeObject(forKey: "shipian.name") as? String ?? "附件"
+        previewImage = coder.decodeObject(forKey: "shipian.preview") as? NSImage
+        imageKind = coder.decodeBool(forKey: "shipian.image")
+        wide = coder.decodeBool(forKey: "shipian.wide")
+        caption = coder.decodeObject(forKey: "shipian.caption") as? String
+        scale = coder.containsValue(forKey: "shipian.scale") ? CGFloat(coder.decodeDouble(forKey: "shipian.scale")) : 1
+        displaySize = coder.decodeSize(forKey: "shipian.size")
+        imageSize = coder.containsValue(forKey: "shipian.imageSize") ? coder.decodeSize(forKey: "shipian.imageSize") : displaySize
+        super.init(coder: coder)
     }
-    override func encode(with coder:NSCoder) {
-        super.encode(with:coder)
-        coder.encode(name,forKey:"shipian.name"); coder.encode(previewImage,forKey:"shipian.preview")
-        coder.encode(imageKind,forKey:"shipian.image"); coder.encode(displaySize,forKey:"shipian.size")
+
+    override func encode(with coder: NSCoder) {
+        super.encode(with: coder)
+        coder.encode(name, forKey: "shipian.name"); coder.encode(previewImage, forKey: "shipian.preview")
+        coder.encode(imageKind, forKey: "shipian.image"); coder.encode(displaySize, forKey: "shipian.size")
+        coder.encode(wide, forKey: "shipian.wide"); coder.encode(caption, forKey: "shipian.caption")
+        coder.encode(Double(scale), forKey: "shipian.scale"); coder.encode(imageSize, forKey: "shipian.imageSize")
     }
-    override func cellSize() -> NSSize { displaySize }
-    override func cellBaselineOffset() -> NSPoint { NSPoint(x:0,y:0) }
-    override func draw(withFrame frame: NSRect, in controlView: NSView?) {
-        if let previewImage, imageKind {
-            NSGraphicsContext.saveGraphicsState()
-            NSBezierPath(roundedRect:frame,xRadius:12,yRadius:12).addClip()
-            previewImage.draw(in:frame,from:.zero,operation:.sourceOver,fraction:1,respectFlipped:true,hints:nil)
-            NSGraphicsContext.restoreGraphicsState(); return
+
+    private var captionFont: NSFont { .systemFont(ofSize: 12 * scale) }
+
+    @discardableResult func updateWidth(_ available: CGFloat) -> Bool {
+        let previous = displaySize
+        let width = wide ? available : min(380 * scale, available)
+        if let previewImage, imageKind, previewImage.size.width > 0 {
+            let w = wide ? width : min(width, previewImage.size.width * scale)
+            imageSize = NSSize(width: w, height: w * previewImage.size.height / previewImage.size.width)
+        } else {
+            imageSize = NSSize(width: min(available, max(150, min(width, 470 * scale))), height: (imageKind ? 110 : 68) * scale)
         }
-        NSColor(NotesTheme.shell).withAlphaComponent(0.75).setFill()
-        NSBezierPath(roundedRect:frame, xRadius:10, yRadius:10).fill()
-        let title = (imageKind ? "图片暂时无法读取：" : "附件：") + name
-        (title as NSString).draw(in:frame.insetBy(dx:14,dy:16), withAttributes:[.font:NSFont.systemFont(ofSize:14),.foregroundColor:NSColor(NotesTheme.text)])
+        displaySize = imageSize
+        if imageKind, let caption, !caption.isEmpty {
+            displaySize.width = min(available, max(imageSize.width, 150 * scale))
+            let bounds = (caption as NSString).boundingRect(with: NSSize(width: displaySize.width, height: .greatestFiniteMagnitude),
+                options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: [.font: captionFont])
+            displaySize.height += ceil(bounds.height) + 7 * scale
+        }
+        return previous != displaySize
+    }
+
+    override func cellSize() -> NSSize { displaySize }
+    override func cellBaselineOffset() -> NSPoint { .zero }
+    override func draw(withFrame frame: NSRect, in controlView: NSView?) {
+        let flipped = controlView?.isFlipped ?? true
+        let imageFrame = NSRect(x: frame.minX, y: flipped ? frame.minY : frame.maxY - imageSize.height,
+                                width: imageSize.width, height: imageSize.height)
+        if let previewImage, imageKind {
+            let movingFrame = imageFrame.offsetBy(dx: 0, dy: (flipped ? 3 : -3) * (1 - entranceProgress))
+            NSGraphicsContext.saveGraphicsState()
+            NSBezierPath(roundedRect: imageFrame, xRadius: 12, yRadius: 12).addClip()
+            previewImage.draw(in: movingFrame, from: .zero, operation: .sourceOver, fraction: entranceProgress, respectFlipped: true, hints: nil)
+            NSGraphicsContext.restoreGraphicsState()
+        } else {
+            NSColor(NotesTheme.shell).withAlphaComponent(0.75).setFill()
+            NSBezierPath(roundedRect: imageFrame, xRadius: 10, yRadius: 10).fill()
+            let title = (imageKind ? "图片暂时无法读取：" : "附件：") + name
+            (title as NSString).draw(in: imageFrame.insetBy(dx: 14, dy: 16), withAttributes: [.font: NSFont.systemFont(ofSize: 14), .foregroundColor: NSColor(NotesTheme.text)])
+        }
+        if imageKind, let caption, displaySize.height > imageSize.height {
+            let y = flipped ? imageFrame.maxY + 7 * scale : frame.minY
+            (caption as NSString).draw(with: NSRect(x: frame.minX, y: y, width: displaySize.width,
+                height: displaySize.height - imageSize.height - 7 * scale),
+                options: [.usesLineFragmentOrigin, .usesFontLeading],
+                attributes: [.font: captionFont, .foregroundColor: NSColor(NotesTheme.muted)])
+        }
     }
 }

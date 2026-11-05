@@ -211,7 +211,7 @@ struct NotesLibraryView: View {
     }
 }
 
-private struct NotesLibraryCard: View {
+struct NotesLibraryCard: View {
     let note: NoteDocument
     let workspace: NotesWorkspace
     let store: NotesStore
@@ -225,7 +225,7 @@ private struct NotesLibraryCard: View {
             Button {
                 if note.deletedAt == nil { workspace.open(note.id) }
             } label: {
-                VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 6) {
                     HStack(spacing: 7) {
                         Image(systemName: note.blocks.contains(where: { $0.kind == .checklist }) ? "checklist" : "doc.text")
                         Text(note.deletedAt != nil ? "最近删除" : (note.onLine ? "挂绳上" : (note.draft ? "草稿" : "已取下")))
@@ -237,15 +237,7 @@ private struct NotesLibraryCard: View {
                         NotesLibraryThumbnail(url: try? store.url(for: attachment))
                             .frame(height: 56).clipped().clipShape(RoundedRectangle(cornerRadius: 10))
                     }
-                    VStack(alignment: .leading, spacing: 6) {
-                        ForEach(Array(note.blocks.filter { $0.kind == .paragraph || $0.kind == .checklist }.prefix(hasImage ? 1 : 2))) { block in
-                            HStack(alignment: .firstTextBaseline, spacing: 5) {
-                                if block.kind == .checklist { Image(systemName: block.isChecked ? "checkmark.square.fill" : "square").foregroundStyle(block.isChecked ? NotesTheme.accent : NotesTheme.muted) }
-                                Text(block.text).lineLimit(1)
-                            }
-                        }
-                    }.font(.system(size: 13)).foregroundStyle(NotesTheme.muted)
-                    Spacer(minLength: 0)
+                    NotesLibraryPreview(note: note)
                 }.padding(.horizontal, 18).padding(.vertical, 16).frame(maxWidth: .infinity, minHeight: 176, maxHeight: 176, alignment: .topLeading).clipped().contentShape(Rectangle())
             }.buttonStyle(NotesPressStyle(hoverFill: false))
                 .accessibilityLabel("\(note.displayTitle)，\(note.onLine ? "挂绳上" : (note.draft ? "草稿" : "已取下"))")
@@ -281,6 +273,27 @@ private struct NotesLibraryCard: View {
         menu.addItem(ClosureMenuItem("制作副本") { workspace.duplicate(note.id) }.notesSymbol("plus.square.on.square"))
         menu.addItem(ClosureMenuItem("导出 Markdown 及附件…") { workspace.export(note.id) }.notesSymbol("square.and.arrow.up"))
         return menu
+    }
+}
+
+/// Share the rope's height-constrained text layout, at the library's own size.
+/// The remaining space follows the status, wrapped title and optional picture.
+private struct NotesLibraryPreview: View {
+    let note: NoteDocument
+    @Environment(\.colorScheme) private var colorScheme
+    private var hasText: Bool {
+        note.blocks.contains { $0.kind == .checklist || ($0.kind == .paragraph && !$0.text.isEmpty) }
+    }
+    var body: some View {
+        GeometryReader { geometry in
+            if hasText {
+                let appearance = NSAppearance(named: colorScheme == .dark ? .darkAqua : .aqua) ?? NSApp.effectiveAppearance
+                Image(nsImage: NoteThumbnailText.image(for: note, size: geometry.size, appearance: appearance,
+                                                       font: .systemFont(ofSize: 13), color: NSColor(NotesTheme.muted),
+                                                       paragraphSpacing: 4))
+                    .accessibilityHidden(true)
+            }
+        }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading).clipped()
     }
 }
 

@@ -5,7 +5,7 @@ import AppKit
     static func session(for view: NSTextView) -> NotesEditorSession? {
         (view as? NotesTextView)?.session ?? (view as? NotesTitleFieldEditor)?.session
     }
-    static func make(for view: NSTextView, session: NotesEditorSession? = nil) -> NSMenu {
+    static func make(for view: NSTextView, session: NotesEditorSession? = nil, at point: NSPoint? = nil) -> NSMenu {
         let menu = NSMenu()
         menu.autoenablesItems = false
         func add(_ title: String, _ action: Selector, key: String = "", symbol: String) {
@@ -13,6 +13,23 @@ import AppKit
             item.target = view
             item.isEnabled = view.validateMenuItem(item)
             menu.addItem(item)
+        }
+        if let text = view as? NotesTextView, let point, let link = text.linkContext(at: point) {
+            menu.addItem(ClosureMenuItem("打开链接") { text.openLink(link.url) }.notesSymbol("arrow.up.forward.app"))
+            menu.addItem(ClosureMenuItem("复制链接地址") {
+                NSPasteboard.general.clearContents(); NSPasteboard.general.setString(link.url.absoluteString, forType: .string)
+            }.notesSymbol("link"))
+            let edit = ClosureMenuItem("编辑链接文字") {
+                guard let range = text.linkRange(containing: link.range.location, matching: link.url) else { return }
+                text.window?.makeFirstResponder(text); text.setSelectedRange(range); text.scrollRangeToVisible(range)
+            }.notesSymbol("pencil")
+            edit.isEnabled = !text.hasMarkedText(); menu.addItem(edit)
+            let remove = ClosureMenuItem("移除链接，保留文字") {
+                guard let range = text.linkRange(containing: link.range.location, matching: link.url) else { return }
+                text.removeLink(in: range)
+            }.notesSymbol("link")
+            remove.isEnabled = !text.hasMarkedText(); menu.addItem(remove)
+            menu.addItem(.separator())
         }
         if let session {
             let undo = ClosureMenuItem("撤销", key: "z") { session.undo() }.notesSymbol("arrow.uturn.backward")
@@ -45,8 +62,8 @@ import AppKit
     }
     static func show(for view: NSTextView, event: NSEvent, session: NotesEditorSession? = nil) {
         view.window?.makeFirstResponder(view)
-        NotesMenuPresenter.shared.show(make(for: view, session: session), from: view,
-                                       at: view.convert(event.locationInWindow, from: nil))
+        let point = view.convert(event.locationInWindow, from: nil)
+        NotesMenuPresenter.shared.show(make(for: view, session: session, at: point), from: view, at: point)
     }
     /// SwiftUI can route text-field clicks through a hosting view rather than
     /// its native field's hitTest chain. Find only the field inside this anchor;

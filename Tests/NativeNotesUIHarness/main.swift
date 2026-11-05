@@ -206,6 +206,124 @@ import NotesCore
         let composing = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: routing.windowNumber, context: nil, characters: "a", charactersIgnoringModifiers: "a", isARepeat: false, keyCode: 0)!
         check(presenter.handleKey(composing) == nil && !presenter.isPresented && routing.receivedKeys.last == 0, "composition keys dismiss the menu and reach the source input window")
         routingText.unmarkText(); routing.orderOut(nil)
+        let editorWindow = ContextToolsWindow(contentRect: NSRect(x: 100, y: 100, width: 700, height: 400),
+                                             styleMask: [.borderless], backing: .buffered, defer: false)
+        editorWindow.isReleasedWhenClosed = false
+        let contextSession = NotesEditorSession(note: try store.create(), store: store)
+        var contextBlock = contextSession.note.blocks[0]; contextBlock.text = "选中文字后调整格式"
+        contextSession.updateText(contextBlock)
+        let contextView = NotesContinuousTextView(frame: NSRect(x: 32, y: 32, width: 610, height: 300))
+        let contextContent = NSView(frame: NSRect(origin: .zero, size: editorWindow.frame.size))
+        contextContent.addSubview(contextView); editorWindow.contentView = contextContent
+        contextView.session = contextSession; contextSession.textView = contextView
+        contextView.minSize = NSSize(width: 0, height: 300)
+        contextView.contextTools.enabled = true
+        contextView.loadDocument(contextSession.note)
+        editorWindow.orderFront(nil); editorWindow.makeFirstResponder(contextView)
+        let selected = NSRange(location: 0, length: 4)
+        contextView.setSelectedRange(selected)
+        contextView.contextTools.selectionChanged()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        check(contextView.contextTools.isVisible, "native selection shows the contextual formatting bar")
+        let cursorBar = contextView.subviews.first { $0.frame.height == 43 && $0.frame.width == 248 }!.frame
+        func moveContextCursor(to location: NSPoint) -> NSCursor {
+            let event = NSEvent.mouseEvent(with: .mouseMoved, location: contextView.convert(location, to: nil),
+                modifierFlags: [], timestamp: 0, windowNumber: editorWindow.windowNumber, context: nil,
+                eventNumber: 0, clickCount: 0, pressure: 0)!
+            contextView.mouseMoved(with: event)
+            return NSCursor.current
+        }
+        let buttonOffsets: [CGFloat] = [43, 113, 147, 180, 225]
+        check(buttonOffsets.allSatisfy {
+            moveContextCursor(to: NSPoint(x: cursorBar.minX + $0, y: cursorBar.midY)) == .pointingHand
+        }, "all contextual formatting buttons show the pointing-hand cursor")
+        check(moveContextCursor(to: NSPoint(x: cursorBar.minX + 92, y: cursorBar.midY)) == .iBeam,
+              "toolbar divider does not inherit the hand cursor")
+        check(moveContextCursor(to: NSPoint(x: 10, y: 12)) == .iBeam,
+              "leaving the toolbar for the text restores the text cursor")
+        func pressContextPoint(_ location: NSPoint) {
+            let point = contextView.convert(location, to: nil)
+            for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                let event = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
+                    timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: editorWindow.windowNumber,
+                    context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!
+                NSApp.postEvent(event, atStart: false)
+            }
+            while let event = NSApp.nextEvent(matching: [.leftMouseDown, .leftMouseUp],
+                                               until: .distantPast, inMode: .default, dequeue: true) {
+                editorWindow.sendEvent(event)
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        }
+        func pressContextButton(at offset: CGFloat) {
+            let bar = contextView.subviews.first { $0.frame.width > 100 && (36...43).contains($0.frame.height) }!.frame
+            pressContextPoint(NSPoint(x: bar.minX + offset, y: bar.midY))
+        }
+        func textField(in view: NSView) -> NSTextField? {
+            if let field = view as? NSTextField, field.isEditable { return field }
+            return view.subviews.compactMap { textField(in: $0) }.first
+        }
+        pressContextButton(at: 113)
+        check(contextView.isSelected(.bold) && contextView.selectedRange() == selected, "clicking contextual Bold changes the selection without losing it")
+        pressContextButton(at: 225)
+        let linkForm = contextView.subviews.first { $0.frame.height == 78 && $0.frame.width == 300 }
+        check(linkForm?.window === editorWindow && contextView.selectedRange() == selected,
+              "link form stays inside the editor and retains the selected text")
+        guard let linkForm, let linkField = textField(in: linkForm) else { fatalError("Link form input is missing") }
+        linkField.selectText(nil)
+        guard let fieldEditor = linkField.currentEditor() as? NSTextView else { fatalError("Link input did not receive focus") }
+        let url = URL(string: "https://example.com/")!
+        fieldEditor.insertText(url.absoluteString, replacementRange: fieldEditor.selectedRange())
+        RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        pressContextPoint(NSPoint(x: linkForm.frame.maxX - 42, y: linkForm.frame.maxY - 27))
+        let link = contextView.textStorage?.attribute(.link, at: selected.location, effectiveRange: nil)
+        check(NotesWebLink.destination(from: link) == url && contextView.selectedRange() == selected,
+              "applying the in-editor link form updates the selected text and restores focus")
+        pressContextButton(at: 43)
+        check(presenter.isPresented && contextView.selectedRange() == selected, "clicking the paragraph control opens a menu without losing the selection")
+        let contextGlyphs = contextView.layoutManager!.glyphRange(forCharacterRange: selected, actualCharacterRange: nil)
+        let contextBounds = contextView.layoutManager!.boundingRect(forGlyphRange: contextGlyphs, in: contextView.textContainer!)
+            .offsetBy(dx: contextView.textContainerOrigin.x, dy: contextView.textContainerOrigin.y)
+        check(!presenter.panel!.frame.intersects(editorWindow.convertToScreen(contextView.convert(contextBounds, to: nil))),
+              "contextual paragraph menu avoids the selected text")
+        func menuKey(_ code: UInt16, _ character: String) {
+            let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+                windowNumber: presenter.panel!.windowNumber, context: nil, characters: character,
+                charactersIgnoringModifiers: character, isARepeat: false, keyCode: code)!
+            _ = presenter.handleKey(event)
+        }
+        menuKey(125, ""); menuKey(36, "\r")
+        check(contextView.selectionHeading == 1 && contextView.selectedRange() == selected,
+              "keyboard selection of Heading 1 preserves the original selection")
+        contextView.setSelectedRange(NSRange(location: 0, length: 0))
+        contextView.contextTools.selectionChanged()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        check(!contextView.contextTools.isVisible, "collapsing the selection dismisses contextual formatting")
+        let preview = NSImage(size: NSSize(width: 120, height: 80))
+        preview.lockFocus()
+        NSColor.systemBlue.setFill(); NSRect(origin: .zero, size: preview.size).fill()
+        preview.unlockFocus()
+        contextSession.pasteImage(preview)
+        contextView.imageProvider = { _ in preview }
+        contextView.loadDocument(contextSession.note)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        let imageIndex = (contextView.string as NSString).range(of: "\u{fffc}")
+        check(imageIndex.location != NSNotFound, "image insertion creates an inline image at the caret")
+        let imageGlyph = contextView.layoutManager!.glyphRange(forCharacterRange: imageIndex, actualCharacterRange: nil)
+        let imageBounds = contextView.layoutManager!.boundingRect(forGlyphRange: imageGlyph, in: contextView.textContainer!)
+            .offsetBy(dx: contextView.textContainerOrigin.x, dy: contextView.textContainerOrigin.y)
+        let imagePoint = contextView.convert(NSPoint(x: imageBounds.midX, y: imageBounds.midY), to: nil)
+        let hover = NSEvent.mouseEvent(with: .mouseMoved, location: imagePoint, modifierFlags: [], timestamp: 0,
+            windowNumber: editorWindow.windowNumber, context: nil, eventNumber: 0, clickCount: 0, pressure: 0)!
+        contextView.mouseMoved(with: hover)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        check(contextView.contextTools.isVisible, "pointer hover shows image controls even on a small image")
+        pressContextButton(at: 51)
+        check(presenter.isPresented, "clicking image width opens the native width choices")
+        menuKey(125, ""); menuKey(36, "\r")
+        check(contextSession.note.blocks.first(where: { $0.kind == .image })?.imageWide == true,
+              "selecting full width updates the image block")
+        editorWindow.orderOut(nil)
         let motion = NotesWindow(contentRect: NSRect(x: 100, y: 100, width: 100, height: 100), styleMask: [.borderless], backing: .buffered, defer: false)
         motion.isReleasedWhenClosed = false
         NotesWindowMotion.show(motion); NotesWindowMotion.hide(motion); NotesWindowMotion.show(motion)
@@ -222,10 +340,6 @@ import NotesCore
         searchWindow.contentView = NSHostingView(rootView: SearchFieldRegressionView())
         searchWindow.makeKeyAndOrderFront(nil)
         RunLoop.current.run(until: Date().addingTimeInterval(0.12))
-        func textField(in view: NSView) -> NSTextField? {
-            if let field = view as? NSTextField, field.isEditable { return field }
-            return view.subviews.compactMap { textField(in: $0) }.first
-        }
         guard let searchField = textField(in: searchWindow.contentView!) else { fatalError("SwiftUI search field must exist") }
         searchField.selectText(nil)
         let nativeFieldEditor = searchField.currentEditor()
@@ -280,6 +394,12 @@ import NotesCore
 @MainActor final class WindowCloseProbe: NSObject, NSWindowDelegate {
     var requests = 0
     func windowShouldClose(_ sender: NSWindow) -> Bool { requests += 1; return false }
+}
+
+// The harness runs as a command-line process without foreground app activation.
+@MainActor final class ContextToolsWindow: NSWindow {
+    override var canBecomeKey: Bool { true }
+    override var isKeyWindow: Bool { true }
 }
 
 @MainActor final class MenuRoutingWindow: NSWindow {

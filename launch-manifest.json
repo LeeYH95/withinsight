@@ -120,6 +120,32 @@
         "Tests/LineIntegrationTests/LineStartupTests.swift",
         "Tests/LineIntegrationTests/PendingScreenshotClearTests.swift"
       ]
+    },
+    {
+      "text": "选区工具条、编辑区内链接输入和图片宽度、替换及说明操作",
+      "evidence": [
+        "Sources/Tendedero/NotesEditorContextTools.swift",
+        "Sources/Tendedero/NotesContinuousTextView.swift",
+        "Sources/Tendedero/NotesEditorSession.swift",
+        "Tests/LineIntegrationTests/EditorImageInteractionTests.swift"
+      ]
+    },
+    {
+      "text": "复制图片挂绳支持 Finder 多图、去重与重挂、按序处理及三秒撤销",
+      "evidence": [
+        "Sources/Tendedero/ClipboardWatcher.swift",
+        "Sources/Tendedero/Line.swift",
+        "Sources/Tendedero/ScreenshotClearControl.swift",
+        "Tests/LineIntegrationTests/ClipboardWatcherTests.swift"
+      ]
+    },
+    {
+      "text": "闪念库卡片按剩余高度预览正文和待办",
+      "evidence": [
+        "Sources/Tendedero/NotesLibraryView.swift",
+        "Sources/Tendedero/NoteThumbnail.swift",
+        "Tests/LineIntegrationTests/LibraryCardPreviewTests.swift"
+      ]
     }
   ],
   "assets": [

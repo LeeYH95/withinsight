@@ -231,6 +231,34 @@ public final class NotesStore: ObservableObject {
         return attachment
     }
 
+    public func replaceImage(_ oldID: UUID, in noteID: UUID, from source: URL) throws {
+        var note = try requireNote(noteID)
+        guard note.deletedAt == nil else { throw NotesStoreError.noteIsInTrash }
+        guard let index = note.attachments.firstIndex(where: { $0.id == oldID && $0.kind == .image }),
+              note.blocks.contains(where: { $0.attachmentID == oldID }) else {
+            throw NotesStoreError.attachmentNotFound
+        }
+        try requireRegularFile(source)
+        guard UTType(filenameExtension: source.pathExtension)?.conforms(to: .image) == true else {
+            throw NotesStoreError.invalidSource
+        }
+        let replacement = try copyAttachment(from: source, name: source.lastPathComponent, kind: .image)
+        note.attachments[index] = replacement
+        for block in note.blocks.indices where note.blocks[block].attachmentID == oldID {
+            note.blocks[block].attachmentID = replacement.id
+            note.blocks[block].text = replacement.name
+        }
+        do { try update(note) }
+        catch {
+            // A failed flush retains the edited snapshot for retry. Only remove
+            // the new file when validation failed before adopting that snapshot.
+            if document(id: noteID)?.attachments.contains(where: { $0.id == replacement.id }) != true {
+                try? fileManager.removeItem(at: url(for: replacement))
+            }
+            throw error
+        }
+    }
+
     public func removeAttachment(_ attachmentID: UUID, from noteID: UUID) throws {
         var note = try requireNote(noteID)
         guard let attachment = note.attachments.first(where: { $0.id == attachmentID }) else {
@@ -293,6 +321,9 @@ public final class NotesStore: ObservableObject {
                           let relative = links[id] else { throw NotesStoreError.attachmentNotFound }
                     let label = escapeMarkdown(attachment.name)
                     sections.append("\(block.kind == .image ? "!" : "")[\(label)](\(relative))")
+                    if block.kind == .image, let caption = block.imageCaption, !caption.isEmpty {
+                        sections.append(escapeMarkdown(caption))
+                    }
                 }
             }
             // Attachments without a corresponding block remain portable, too.

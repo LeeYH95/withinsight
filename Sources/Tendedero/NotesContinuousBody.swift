@@ -7,14 +7,20 @@ struct NotesContinuousBody: NSViewRepresentable {
     let scale:CGFloat
     var onHeight:(CGFloat)->Void
     var onAttachment:(NoteAttachment)->Void
+    var onDropTargetChange: (Bool) -> Void = { _ in }
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeNSView(context:Context) -> NotesContinuousTextView {
         let view = NotesContinuousTextView(frame:NSRect(x:0,y:0,width:500,height:100),textContainer:nil)
+        // SwiftUI owns the viewport height. TextKit shrinking to its used
+        // lines during edits leaves no space for the contextual toolbar.
+        view.isVerticallyResizable = false
         view.session = session; session.textView = view; view.readingScale = scale
         view.preservePastedFormatting = UserDefaults.standard.string(forKey:"notesPasteMode") == "preserve"
         view.delegate = context.coordinator
+        view.contextTools.enabled = true
         view.imageProvider = { [weak session] attachment in guard let session, let url = try? session.localURL(for:attachment) else { return nil }; return NotesImageCache.shared.image(at:url) }
         view.onAttachment = onAttachment
+        view.onDropTargetChange = onDropTargetChange
         view.publish = { [weak coordinator = context.coordinator] in coordinator?.publish() }
         view.onLayout = { [weak coordinator = context.coordinator] in coordinator?.measure() }
         context.coordinator.view = view; context.coordinator.load(); return view
@@ -22,6 +28,7 @@ struct NotesContinuousBody: NSViewRepresentable {
     func updateNSView(_ view:NotesContinuousTextView, context:Context) {
         context.coordinator.parent = self
         view.onAttachment = onAttachment
+        view.onDropTargetChange = onDropTargetChange
         view.preservePastedFormatting = UserDefaults.standard.string(forKey:"notesPasteMode") == "preserve"
         let cacheChanged = context.coordinator.imageRevision != NotesImageCache.shared.revision
         let imagesChanged = !view.hasMarkedText() && cacheChanged && view.refreshVisibleImages(session.note)
@@ -54,8 +61,18 @@ struct NotesContinuousBody: NSViewRepresentable {
             view.loadDocument(parent.session.note)
             // Import puts the caret in the new paragraph after the attachment.
             if let focused = parent.session.focusedBlock, focused != view.blockID {
+                if let last = parent.session.note.blocks.last, last.id == focused, last.kind == .paragraph, last.text.isEmpty {
+                    view.setSelectedRange(NSRange(location: view.string.utf16.count, length: 0))
+                    view.blockID = focused
+                }
                 view.textStorage?.enumerateAttribute(.notesBlock,in:NSRange(location:0,length:view.textStorage?.length ?? 0)) { id,range,stop in
                     if id as? String == focused.uuidString { view.setSelectedRange(NSRange(location:range.location,length:0)); view.blockID = focused; stop.pointee = true }
+                }
+                let caret = view.selectedRange()
+                DispatchQueue.main.async { [weak view] in
+                    guard let view, view.window?.firstResponder === view, view.blockID == focused,
+                          view.selectedRange() == caret else { return }
+                    view.scrollRangeToVisible(caret)
                 }
             }
             if let selection = parent.session.consumeBodySelection() {
@@ -81,6 +98,7 @@ struct NotesContinuousBody: NSViewRepresentable {
         func textViewDidChangeSelection(_ notification:Notification) {
             guard let view, !view.loading, !view.hasMarkedText() else { return }
             view.cleanTypingAttributes()
+            view.contextTools.selectionChanged()
             let index = min(view.selectedRange().location,max(0,(view.textStorage?.length ?? 0) - 1))
             if (view.textStorage?.length ?? 0) > 0, let id = (view.textStorage?.attribute(.notesBlock,at:index,effectiveRange:nil) as? String).flatMap(UUID.init(uuidString:)) { view.blockID = id; parent.session.focusedBlock = id }
         }

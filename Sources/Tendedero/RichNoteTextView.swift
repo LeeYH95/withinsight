@@ -14,7 +14,8 @@ class NotesTextView: NSTextView {
     var publish: (() -> Void)?
     var openLink: (URL) -> Void = { NSWorkspace.shared.open($0) }
     @discardableResult func activateLink(at index: Int, modifiers: NSEvent.ModifierFlags) -> Bool {
-        guard modifiers.contains(.command), index >= 0, index < (textStorage?.length ?? 0),
+        guard modifiers.intersection([.control, .option, .shift]).isEmpty,
+              index >= 0, index < (textStorage?.length ?? 0),
               let url = NotesWebLink.destination(from: textStorage?.attribute(.link, at: index, effectiveRange: nil)) else { return false }
         openLink(url); return true
     }
@@ -160,13 +161,133 @@ class NotesTextView: NSTextView {
     }
     override func mouseDown(with event: NSEvent) {
         if event.modifierFlags.contains(.control) { rightMouseDown(with: event); return }
-        // Native link interaction in an editor is intentionally Command-click only.
-        if event.modifierFlags.contains(.command), let layoutManager, let textContainer {
-            let point = convert(event.locationInWindow, from: nil)
-            let index = layoutManager.characterIndex(for: NSPoint(x: point.x - textContainerOrigin.x, y: point.y - textContainerOrigin.y), in: textContainer, fractionOfDistanceBetweenInsertionPoints: nil)
-            if activateLink(at: index, modifiers: event.modifierFlags) { return }
+        let start = convert(event.locationInWindow, from: nil)
+        guard event.modifierFlags.intersection([.option, .shift]).isEmpty,
+              event.clickCount == 1, let window, let target = linkHit(at: start) else {
+            super.mouseDown(with: event); return
         }
-        super.mouseDown(with: event)
+        defer { withExtendedLifetime(window) {} }
+        if event.modifierFlags.contains(.command) {
+            _ = activateLink(at: target.index, modifiers: event.modifierFlags); return
+        }
+        // Decide on release: a normal click opens, while a drag is returned to
+        // NSTextView's own selection tracking with its first drag event intact.
+        while let next = NSApp.nextEvent(matching: [.leftMouseUp, .leftMouseDragged], until: .distantFuture,
+                                         inMode: .eventTracking, dequeue: true) {
+            let point = convert(next.locationInWindow, from: nil)
+            let distance = hypot(point.x - start.x, point.y - start.y)
+            if next.type == .leftMouseDragged, next.windowNumber == event.windowNumber, distance < 4 { continue }
+            if next.type == .leftMouseUp, next.windowNumber == event.windowNumber, distance < 4,
+               let released = linkHit(at: point), released.url == target.url {
+                _ = activateLink(at: released.index, modifiers: next.modifierFlags)
+                return
+            }
+            NSApp.postEvent(next, atStart: true)
+            super.mouseDown(with: event)
+            return
+        }
+    }
+
+    private var interactionTracking: NSTrackingArea?
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let interactionTracking { removeTrackingArea(interactionTracking) }
+        let area = NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .cursorUpdate, .activeInKeyWindow, .inVisibleRect], owner: self)
+        addTrackingArea(area); interactionTracking = area
+    }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        window?.acceptsMouseMovedEvents = true
+    }
+    /// NSTextView updates its I-beam during tracking, after cursor rectangles.
+    /// Resolve from live glyphs so edits, wrapping and scrolling cannot leave stale hotspots.
+    func interactionCursor(at point: NSPoint, modifiers: NSEvent.ModifierFlags) -> NSCursor {
+        modifiers.intersection([.option, .shift, .control]).isEmpty && linkHit(at: point) != nil ? .pointingHand : .iBeam
+    }
+    private func updateInteractionCursor(_ event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        guard visibleRect.contains(point) else { return }
+        interactionCursor(at: point, modifiers: event.modifierFlags).set()
+        let hint = interactionHint(at: point)
+        if toolTip != hint { toolTip = hint }
+    }
+    func interactionHint(at point: NSPoint) -> String? {
+        guard let hit = linkHit(at: point) else { return nil }
+        return String(hit.url.absoluteString.prefix(220)) + "\n点击打开 · Option 点击编辑文字"
+    }
+    func removeLink(in range: NSRange) {
+        guard !hasMarkedText(), let storage = textStorage, NSMaxRange(range) <= storage.length,
+              shouldChangeText(in: range, replacementString: nil) else { return }
+        session?.captureBodySelection(selectedRange()); session?.endTypingGroup()
+        storage.removeAttribute(.link, range: range)
+        storage.removeAttribute(.toolTip, range: range)
+        storage.removeAttribute(.notesPendingLink, range: range)
+        toolTip = nil
+        storage.addAttributes([.foregroundColor: NSColor(NotesTheme.text), .underlineStyle: 0], range: range)
+        didChangeText(); session?.endTypingGroup()
+    }
+    override func mouseMoved(with event: NSEvent) {
+        super.mouseMoved(with: event)
+        updateInteractionCursor(event)
+    }
+    override func cursorUpdate(with event: NSEvent) {
+        super.cursorUpdate(with: event)
+        updateInteractionCursor(event)
+    }
+    override func flagsChanged(with event: NSEvent) {
+        super.flagsChanged(with: event)
+        guard let window, window.isKeyWindow else { return }
+        let point = convert(window.mouseLocationOutsideOfEventStream, from: nil)
+        if visibleRect.contains(point) { interactionCursor(at: point, modifiers: event.modifierFlags).set() }
+    }
+    override func didChangeText() {
+        super.didChangeText()
+        window?.invalidateCursorRects(for: self)
+        needsDisplay = true
+    }
+    func linkRange(containing index: Int, matching url: URL) -> NSRange? {
+        guard let storage = textStorage, index >= 0, index < storage.length else { return nil }
+        var range = NSRange()
+        guard NotesWebLink.destination(from: storage.attribute(.link, at: index, effectiveRange: &range)) == url else { return nil }
+        return range
+    }
+    func linkContext(at point: NSPoint) -> (range: NSRange, url: URL)? {
+        guard let hit = linkHit(at: point), let storage = textStorage else { return nil }
+        var range = NSRange()
+        _ = storage.attribute(.link, at: hit.index, effectiveRange: &range)
+        return (range, hit.url)
+    }
+
+    private func linkHit(at point: NSPoint) -> (index: Int, url: URL)? {
+        guard bounds.contains(point), let layoutManager, let textContainer, let storage = textStorage,
+              storage.length > 0 else { return nil }
+        layoutManager.ensureLayout(for: textContainer)
+        let local = NSPoint(x: point.x - textContainerOrigin.x, y: point.y - textContainerOrigin.y)
+        let glyph = layoutManager.glyphIndex(for: local, in: textContainer)
+        guard glyph < layoutManager.numberOfGlyphs,
+              layoutManager.boundingRect(forGlyphRange: NSRange(location: glyph, length: 1), in: textContainer).contains(local) else { return nil }
+        let index = layoutManager.characterIndexForGlyph(at: glyph)
+        guard index < storage.length,
+              let url = NotesWebLink.destination(from: storage.attribute(.link, at: index, effectiveRange: nil)) else { return nil }
+        return (index, url)
+    }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        guard let layoutManager, let textContainer, let storage = textStorage, storage.length > 0 else { return }
+        let origin = textContainerOrigin
+        let visible = visibleRect.offsetBy(dx: -origin.x, dy: -origin.y)
+        let visibleGlyphs = layoutManager.glyphRange(forBoundingRect: visible, in: textContainer)
+        let characters = layoutManager.characterRange(forGlyphRange: visibleGlyphs, actualGlyphRange: nil)
+        storage.enumerateAttribute(.link, in: characters) { value, range, _ in
+            guard NotesWebLink.destination(from: value) != nil else { return }
+            let glyphs = layoutManager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+            layoutManager.enumerateEnclosingRects(forGlyphRange: glyphs,
+                withinSelectedGlyphRange: NSRange(location: NSNotFound, length: 0), in: textContainer) { rect, _ in
+                let area = rect.offsetBy(dx: origin.x, dy: origin.y).intersection(self.visibleRect)
+                if !area.isEmpty { self.addCursorRect(area, cursor: .pointingHand) }
+            }
+        }
     }
 }
 
@@ -256,7 +377,8 @@ struct RichNoteTextView: NSViewRepresentable {
         func textDidEndEditing(_ notification: Notification) { publish() }
         func textViewDidChangeSelection(_ notification: Notification) { parent.session.undoRevision += 1 }
         func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
-            // Return true to suppress NSTextView's unmodified click-to-open default.
+            // NotesTextView owns click-versus-drag activation. Avoid a second
+            // native open when this legacy block editor handles selection.
             true
         }
         func publish() {
