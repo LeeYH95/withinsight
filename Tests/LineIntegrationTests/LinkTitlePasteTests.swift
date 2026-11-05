@@ -406,13 +406,16 @@ final class LinkTitlePasteTests: XCTestCase {
     private(set) var lastTrace = ""
     init(view: NotesContinuousTextView) throws {
         self.view = view
-        window = NSWindow(contentRect: NSRect(x: -12_000, y: -12_000, width: 480, height: 300),
-                          styleMask: [.borderless], backing: .buffered, defer: false)
+        // Posted events for off-screen, non-key windows can be returned in
+        // global coordinates on older AppKit. Match the real editor window.
+        let origin = NSScreen.main?.visibleFrame.origin ?? .zero
+        window = NotesWindow(contentRect: NSRect(x: origin.x + 40, y: origin.y + 40, width: 480, height: 300),
+                             styleMask: [.borderless], backing: .buffered, defer: false)
         super.init()
         window.isReleasedWhenClosed = false
         window.contentView = view
         view.delegate = self
-        window.orderFront(nil)
+        window.makeKeyAndOrderFront(nil)
         window.makeFirstResponder(view)
         view.layoutManager?.ensureLayout(for: try XCTUnwrap(view.textContainer))
     }
