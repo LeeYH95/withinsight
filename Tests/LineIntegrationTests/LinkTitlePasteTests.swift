@@ -315,6 +315,27 @@ final class LinkTitlePasteTests: XCTestCase {
         XCTAssertEqual(f.view.string, "")
     }
 
+    @MainActor func testRawURLInRichClipboardAlsoResolvesItsTitle() throws {
+        let address = "https://mp.weixin.qq.com/s/QVu2luIrRTtNvsH-U65A8g"
+        for flavor in [NSPasteboard.PasteboardType.rtf, .html] {
+            let f = try LinkFixture(); defer { f.clean() }
+            let board = NSPasteboard.withUniqueName(); defer { board.releaseGlobally() }
+            board.declareTypes([.string, flavor], owner: nil)
+            board.setString(address, forType: .string)
+            if flavor == .rtf {
+                let rich = NSAttributedString(string: address, attributes: [.link: URL(string: address)!])
+                board.setData(try rich.data(from: NSRange(location: 0, length: rich.length), documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]), forType: .rtf)
+            } else {
+                board.setData(Data("<a href='\(address)'>\(address)</a>".utf8), forType: .html)
+            }
+            XCTAssertTrue(f.view.readSelection(from: board))
+            XCTAssertEqual(f.loader.urls, [URL(string: address)!])
+            f.loader.complete(0, "微信公众号文章标题")
+            XCTAssertEqual(f.view.string, "微信公众号文章标题")
+            XCTAssertEqual(f.target(at: 0), address)
+        }
+    }
+
     @MainActor func testURLShapedRichLinkLabelKeepsItsDifferentDestination() throws {
         let f = try LinkFixture(); defer { f.clean() }
         let label = "https://display.example"
