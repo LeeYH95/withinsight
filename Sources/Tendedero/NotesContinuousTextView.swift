@@ -855,10 +855,18 @@ import UniformTypeIdentifiers
         if rich == nil, let data = board.data(forType:.html) { rich = NSAttributedString(html:data,documentAttributes:nil) }
         if let rich, rich.length > 0 {
             var hasLink = false
+            let address = NotesWebLink.url(from: rich.string)
+            var matchesAddress = address != nil
             rich.enumerateAttribute(.link, in: NSRange(location: 0, length: rich.length)) { value, _, _ in
-                if value != nil { hasLink = true }
+                if let value {
+                    hasLink = true
+                    if NotesWebLink.destination(from: value) != address { matchesAddress = false }
+                }
             }
-            if hasLink { return insertPasted(rich) }
+            if hasLink {
+                if matchesAddress, let address { return linkPastes.paste(address, into: self) }
+                return insertPasted(rich)
+            }
         }
         let text = board.string(forType: .string) ?? board.string(forType: .URL)
         if let text, let url = NotesWebLink.url(from: text) { return linkPastes.paste(url, into: self) }

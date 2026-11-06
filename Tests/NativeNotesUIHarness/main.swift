@@ -7,6 +7,10 @@ import NotesCore
     @MainActor static func main() throws {
         setbuf(stdout, nil)
         _ = NSApplication.shared
+        if CommandLine.arguments.dropFirst().first == "--live-links" {
+            try LinkMetadataProbe.run()
+            return
+        }
         if CommandLine.arguments.dropFirst().first == "--durability-child" {
             try DurabilityProbe.child(Array(CommandLine.arguments.dropFirst(2)))
             return

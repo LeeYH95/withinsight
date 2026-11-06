@@ -10,8 +10,13 @@ CONFIG="${1:-debug}"
 notes_app_name="${LINENOTES_APP_NAME:-LineNotes Dev}"
 notes_bundle_id="${LINENOTES_BUNDLE_ID:-local.linenotes.dev}"
 APP="$notes_output/$notes_app_name.app"
-swift build -c "$CONFIG" --scratch-path "$notes_scratch" --disable-sandbox
-BIN_DIR="$(swift build -c "$CONFIG" --scratch-path "$notes_scratch" --disable-sandbox --show-bin-path)"
+notes_spm_options=(--scratch-path "$notes_scratch" --disable-sandbox)
+for option in cache config security; do
+    variable="LINENOTES_SWIFTPM_$(echo "$option" | tr '[:lower:]' '[:upper:]')_PATH"
+    if [[ -n "${!variable:-}" ]]; then notes_spm_options+=("--$option-path" "${!variable}"); fi
+done
+swift build -c "$CONFIG" "${notes_spm_options[@]}"
+BIN_DIR="$(swift build -c "$CONFIG" "${notes_spm_options[@]}" --show-bin-path)"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN_DIR/Tendedero" "$APP/Contents/MacOS/LineNotes.next"
 mv -f "$APP/Contents/MacOS/LineNotes.next" "$APP/Contents/MacOS/LineNotes"
@@ -21,6 +26,7 @@ cp Sources/Tendedero/Resources/LineControls/*.png "$APP/Contents/Resources/LineC
 for dir in Sources/Tendedero/Resources/*.lproj; do cp -R "$dir" "$APP/Contents/Resources/"; done
 cp LICENSE "$APP/Contents/Resources/UPSTREAM-LICENSE.txt"
 cp PHOSPHOR-LICENSE.txt "$APP/Contents/Resources/PHOSPHOR-LICENSE.txt"
+cp SWIFTSOUP-LICENSE.txt "$APP/Contents/Resources/SWIFTSOUP-LICENSE.txt"
 if [[ "${LINENOTES_BRAND_ICONS:-0}" == "1" ]]; then
     python3 scripts/make-brand-icons.py --source Sources/Tendedero/Resources/Brand --output "$notes_output/ShipianIcons"
     cp "$notes_output/ShipianIcons/ShipianLight.icns" "$notes_output/ShipianIcons/Assets.car" "$APP/Contents/Resources/"

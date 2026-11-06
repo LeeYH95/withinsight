@@ -10,7 +10,7 @@
 
 截图留下画面，闪念接住想法。拾片把两者挂在屏幕顶部的一条绳上：要用时展开，写完再收回。给喜欢的图补一句“为什么”，把临时想法写下来，或者留一张今天的待办，不必反复切换窗口。
 
-> 当前为 **0.5.23**。提供 Apple Silicon（arm64）安装包，最低 macOS 14。采用本地 ad hoc 签名，**尚未经过 Apple 公证**；从互联网下载后，其他 Mac 可能需要在系统设置中手动确认打开。[查看本次更新](docs/launch/RELEASE-0.5.23.md)
+> 当前为 **0.5.24**。提供 Apple Silicon（arm64）安装包，最低 macOS 14。采用本地 ad hoc 签名，**尚未经过 Apple 公证**，从互联网下载后，其他 Mac 可能需要在系统设置中手动确认打开。[查看本次更新](docs/launch/RELEASE-0.5.24.md)
 
 ## 先看它怎么用
 
@@ -73,7 +73,7 @@
 
 ## 三步开始
 
-1. 下载 [拾片 0.5.23 安装包（DMG）](../../releases/download/v0.5.23/Shipian-0.5.23-arm64.dmg)，打开后将「拾片.app」拖到应用程序，或使用 [ZIP](../../releases/download/v0.5.23/Shipian-0.5.23-arm64.zip) 中的应用。
+1. 下载 [拾片 0.5.24 安装包（DMG）](../../releases/download/v0.5.24/Shipian-0.5.24-arm64.dmg)，打开后将「拾片.app」拖到应用程序，或使用 [ZIP](../../releases/download/v0.5.24/Shipian-0.5.24-arm64.zip) 中的应用。
 2. 启动后打开闪念库，新建一条闪念，按需加入文字、待办和图片。写好后再挂上；新建自动挂上默认关闭。
 3. 在顶部挂绳中展开闪念继续编辑；暂时不用的内容取下后，仍可在闪念库找到。
 
@@ -106,7 +106,7 @@
 
 ## 从源码构建
 
-应用运行需要 macOS 14 或更新系统。正式品牌包构建需要包含 Icon Composer / actool 的 Xcode 26 或更新版本、Python 3 和 `ripgrep`（UI 验收脚本使用）；普通开发版与核心测试可使用 Swift 5.9 或更新工具链。
+应用运行需要 macOS 14 或更新系统。正式品牌包构建需要包含 Icon Composer / actool 的 Xcode 26 或更新版本、Python 3 和 `ripgrep`（UI 验收脚本使用）；普通开发版与测试需要 Swift 6.0 或更新工具链，首次构建通过 Swift Package Manager 获取固定版本的 SwiftSoup 依赖。
 
 ```sh
 git clone https://github.com/LeeYH95/withinsight.git

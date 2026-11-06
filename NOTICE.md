@@ -11,3 +11,5 @@
 编辑工具栏及偏好设置中的部分图形来自 Phosphor Icons regular。Copyright (c) 2020 Phosphor Icons，采用 MIT License，完整声明见 [PHOSPHOR-LICENSE.txt](PHOSPHOR-LICENSE.txt)。应用的系统符号由 macOS 提供。
 
 Swift 包名与部分源码类型保留 `Tendedero`，便于对照上游；用户可见应用名是“拾片”。当前版本沿用 `local.linenotes.test` 身份及 `LineNotes Test` 数据目录以保留既有数据。
+
+网页标题解析使用 [SwiftSoup](https://github.com/scinfu/SwiftSoup) 2.14.3，采用 MIT License。保留 Jonathan Hedley 和 Nabil Chatbi 的版权声明，完整许可见 [SWIFTSOUP-LICENSE.txt](SWIFTSOUP-LICENSE.txt)，并随应用分发。
