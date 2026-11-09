@@ -58,7 +58,7 @@ enum NotesEditorTransitionGeometry {
     /// Text appears at its real point size only near the editor destination.
     /// Closing fades it before the small paper shell reaches the rope.
     static func contentOpacity(_ progress: CGFloat) -> CGFloat {
-        smoothstep((progress - 0.72) / 0.28)
+        smoothstep((progress - 0.86) / 0.14)
     }
 
     static func shellOpacity(_ progress: CGFloat) -> CGFloat { smoothstep(progress / 0.12) }
@@ -70,8 +70,8 @@ enum NotesEditorTransitionGeometry {
 
 /// Editor-only morph. The document window never changes size, responder or
 /// view hierarchy, so IME, undo, pinned level and saved frame survive intact.
-/// A disposable non-interactive panel animates a paper shell; the editor
-/// snapshot is drawn at 1:1 scale and fades rather than shrinking its text.
+/// A non-interactive panel animates the paper shell while the live editor
+/// fades at its full size. Both surfaces follow the same reversible spring.
 @MainActor enum NotesEditorTransition {
     private static var active: [ObjectIdentifier: Transition] = [:]
 
@@ -125,7 +125,7 @@ enum NotesEditorTransitionGeometry {
     @MainActor private final class Transition {
         weak var window: NSWindow?
         let panel: NSPanel
-        let canvas: PaperSnapshotView
+        let canvas: PaperShellView
         let anchor: NSRect
         let editorFrame: NSRect
         let originalIgnoresMouseEvents: Bool
@@ -153,27 +153,20 @@ enum NotesEditorTransitionGeometry {
             panel.level = NSWindow.Level(rawValue: max(window.level.rawValue, NSWindow.Level.floating.rawValue))
             panel.collectionBehavior = [.transient, .fullScreenAuxiliary, .ignoresCycle]
             panel.appearance = window.appearance
-            canvas = PaperSnapshotView(frame: NSRect(origin: .zero, size: panel.frame.size))
-            canvas.editorSize = window.frame.size
+            canvas = PaperShellView(frame: NSRect(origin: .zero, size: panel.frame.size))
             canvas.setAccessibilityElement(false)
             panel.contentView = canvas
         }
 
         func start() {
             guard let window else { finish(); return }
-            // Initial display/layout happens at the final size, never at the
-            // tiny rope anchor. This also permits a first-open snapshot.
-            window.alphaValue = 0
             window.ignoresMouseEvents = true
-            if progress.target == 1 { window.makeKeyAndOrderFront(nil) }
-            window.contentView?.layoutSubtreeIfNeeded()
-            if let view = window.contentView,
-               let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
-                view.cacheDisplay(in: view.bounds, to: bitmap)
-                let image = NSImage(size: view.bounds.size)
-                image.addRepresentation(bitmap)
-                canvas.snapshot = image
+            if progress.target == 1 {
+                window.alphaValue = 0
+                window.makeKeyAndOrderFront(nil)
             }
+            // Prepare the live editor at its final size before the paper fades.
+            window.contentView?.layoutSubtreeIfNeeded()
             canvas.appearance = window.appearance
             applyFrame()
             panel.orderFrontRegardless()
@@ -203,7 +196,9 @@ enum NotesEditorTransitionGeometry {
         func applyFrame() {
             let value = min(1, max(0, progress.value))
             panel.setFrame(NotesEditorTransitionGeometry.frame(anchor: anchor, editor: editorFrame, progress: value), display: false)
-            panel.alphaValue = NotesEditorTransitionGeometry.shellOpacity(value)
+            let contentOpacity = NotesEditorTransitionGeometry.contentOpacity(value)
+            window?.alphaValue = contentOpacity
+            panel.alphaValue = NotesEditorTransitionGeometry.shellOpacity(value) * (1 - contentOpacity)
             canvas.progress = value
             canvas.needsDisplay = true
         }
@@ -227,26 +222,13 @@ enum NotesEditorTransitionGeometry {
         }
     }
 
-    private final class PaperSnapshotView: NSView {
-        var snapshot: NSImage?
-        var editorSize = NSSize.zero
+    private final class PaperShellView: NSView {
         var progress: CGFloat = 0
-        override var isFlipped: Bool { true }
 
         override func draw(_ dirtyRect: NSRect) {
             let radius = 12 + 24 * progress
-            let path = NSBezierPath(roundedRect: bounds, xRadius: radius, yRadius: radius)
-            NSGraphicsContext.saveGraphicsState()
-            path.addClip()
             NSColor(NotesTheme.shell).setFill()
-            bounds.fill()
-            if let snapshot {
-                snapshot.draw(in: NSRect(origin: .zero, size: editorSize), from: .zero,
-                              operation: .sourceOver,
-                              fraction: NotesEditorTransitionGeometry.contentOpacity(progress),
-                              respectFlipped: true, hints: nil)
-            }
-            NSGraphicsContext.restoreGraphicsState()
+            NSBezierPath(roundedRect: bounds, xRadius: radius, yRadius: radius).fill()
         }
     }
 }

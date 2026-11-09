@@ -44,8 +44,8 @@ final class NotesEditorTransitionTests: XCTestCase {
 
     func testTextIsAbsentInTheSmallShellAndFullyVisibleAtEditorDestination() {
         XCTAssertEqual(NotesEditorTransitionGeometry.contentOpacity(0), 0)
-        XCTAssertEqual(NotesEditorTransitionGeometry.contentOpacity(0.7), 0)
-        XCTAssertGreaterThan(NotesEditorTransitionGeometry.contentOpacity(0.86), 0)
+        XCTAssertEqual(NotesEditorTransitionGeometry.contentOpacity(0.86), 0)
+        XCTAssertEqual(NotesEditorTransitionGeometry.contentOpacity(0.93), 0.5, accuracy: 0.001)
         XCTAssertEqual(NotesEditorTransitionGeometry.contentOpacity(1), 1)
         XCTAssertEqual(NotesEditorTransitionGeometry.shellOpacity(0), 0)
     }
@@ -56,7 +56,7 @@ final class NotesEditorTransitionTests: XCTestCase {
         let window = NotesWindow(contentRect: NSRect(x: 180, y: 160, width: 700, height: 500), styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.level = .floating
-        let text = NSTextView(frame: NSRect(x: 20, y: 20, width: 600, height: 400))
+        let text = SnapshotProbeTextView(frame: NSRect(x: 20, y: 20, width: 600, height: 400))
         text.string = "尚未改动的正文"
         window.contentView = text
         window.makeFirstResponder(text)
@@ -64,6 +64,8 @@ final class NotesEditorTransitionTests: XCTestCase {
         let anchor = NSRect(x: 420, y: 800, width: 150, height: 104)
         NotesEditorTransition.show(window, from: anchor)
         defer { NotesEditorTransition.finish(window); window.orderOut(nil) }
+        XCTAssertEqual(window.alphaValue, 0)
+        XCTAssertTrue(window.ignoresMouseEvents)
         RunLoop.current.run(until: Date().addingTimeInterval(0.06))
         NotesEditorTransition.hide(window, to: anchor)
         let closingFrame = NotesEditorTransition.presentationFrame(for: window)
@@ -82,11 +84,14 @@ final class NotesEditorTransitionTests: XCTestCase {
         NotesEditorTransition.show(window, from: anchor)
         XCTAssertFalse(NotesEditorTransition.isAnimating(window), "Focusing an already open editor must not restart from the rope")
         NotesEditorTransition.hide(window, to: anchor)
+        XCTAssertEqual(window.alphaValue, 1, "The live editor starts closing at its current opacity")
+        XCTAssertTrue(window.ignoresMouseEvents)
         NotesEditorTransition.finish(window)
         XCTAssertFalse(window.isVisible)
         XCTAssertEqual(window.frame, savedFrame)
         XCTAssertEqual(window.alphaValue, 1)
         XCTAssertFalse(window.ignoresMouseEvents)
+        XCTAssertEqual(text.snapshotRequests, 0, "Opening and closing must not render the editor into a bitmap")
     }
 
     @MainActor func testReducedMotionNeverCreatesAnOverlayOrLeavesAnInvisibleInputWindow() {
@@ -107,5 +112,14 @@ final class NotesEditorTransitionTests: XCTestCase {
         XCTAssertEqual(window.frame, frame)
         XCTAssertEqual(window.alphaValue, 1)
         XCTAssertFalse(window.ignoresMouseEvents)
+    }
+}
+
+private final class SnapshotProbeTextView: NSTextView {
+    private(set) var snapshotRequests = 0
+
+    override func bitmapImageRepForCachingDisplay(in rect: NSRect) -> NSBitmapImageRep? {
+        snapshotRequests += 1
+        return super.bitmapImageRepForCachingDisplay(in: rect)
     }
 }
