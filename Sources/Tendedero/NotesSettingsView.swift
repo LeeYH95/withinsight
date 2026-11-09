@@ -5,9 +5,11 @@ import NotesCore
 /// System settings are owned by the running app: changing their defaults alone
 /// would leave watchers, capacity and the registered global shortcut out of sync.
 struct NotesSettingsSnapshot: Equatable {
+    static let airDropStatusDidChange = Notification.Name("ShipianAirDropStatusDidChange")
     var watchesScreenshots = false
     var copiesImages = false
     var hangsAirDropImages = false
+    var airDropStatus: String?
     var loginEnabled = false
     var loginNeedsApproval = false
     var screenshotFolder = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Desktop")
@@ -85,6 +87,7 @@ struct NotesSettingsView: View {
             .onAppear(perform: refresh)
             .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)) { _ in refresh() }
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in refresh() }
+            .onReceive(NotificationCenter.default.publisher(for: NotesSettingsSnapshot.airDropStatusDidChange)) { _ in refresh() }
     }
 
     private var sidebar: some View {
@@ -161,7 +164,7 @@ struct NotesSettingsView: View {
             toggle("复制图片时挂到绳上", detail: "开启后读取剪贴板中的图片，文字不会被收集。",
                    value: Binding(get: { system.copiesImages }, set: { actions.copyImages($0); refresh() }))
                 .disabled(!actions.systemAvailable)
-            toggle("隔空投送图片自动挂上", detail: "挂上保存到「下载」的隔空投送图片。首次开启需允许访问「下载」。",
+            toggle("隔空投送图片自动挂上", detail: system.airDropStatus ?? "挂上保存到「下载」的隔空投送图片。",
                    value: Binding(get: { system.hangsAirDropImages }, set: { actions.watchAirDrop($0); refresh() }))
                 .disabled(!actions.systemAvailable)
             row("挂绳保留数量", detail: "超出屏幕宽度时，可横向滚动查看。") {

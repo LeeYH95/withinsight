@@ -7,7 +7,7 @@ MainActor.assumeIsolated {
     let delegate = AppDelegate()
     LaunchTrace.mark("app-delegate-ready")
     app.delegate = delegate
-    app.setActivationPolicy(.accessory)
+    app.setActivationPolicy(LaunchOptions.demo ? .accessory : .regular)
     LaunchTrace.mark("entering-run-loop")
     withExtendedLifetime(delegate) { app.run() }
 }

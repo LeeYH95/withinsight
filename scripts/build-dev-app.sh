@@ -53,7 +53,6 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <key>CFBundleShortVersionString</key><string>0.3.0</string>
 <key>CFBundleVersion</key><string>3</string>
 <key>LSMinimumSystemVersion</key><string>14.0</string>
-<key>LSUIElement</key><true/>
 <key>NSHighResolutionCapable</key><true/>
 <key>NSDesktopFolderUsageDescription</key><string>在你启用截图监听后，访问你选择的截图目录。</string>
 <key>NSDocumentsFolderUsageDescription</key><string>访问你选择的截图或附件目录。</string>

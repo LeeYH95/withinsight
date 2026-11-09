@@ -6,12 +6,12 @@ notes_build_root="${LINENOTES_BUILD_OUTPUT_DIR:-$PWD/build}"
 notes_output="${LINENOTES_RELEASE_OUTPUT_DIR:-$notes_build_root/shipian-release}"
 LINENOTES_APP_NAME="拾片" LINENOTES_BUNDLE_ID="local.linenotes.test" \
 LINENOTES_BUILD_OUTPUT_DIR="$notes_build_root" \
-LINENOTES_VERSION="0.5.27" LINENOTES_BUILD="54" LINENOTES_BRAND_ICONS=1 scripts/build-dev-app.sh release
+LINENOTES_VERSION="0.5.28" LINENOTES_BUILD="55" LINENOTES_BRAND_ICONS=1 scripts/build-dev-app.sh release
 mkdir -p "$notes_output"
 ditto "$notes_build_root/拾片.app" "$notes_output/拾片.app"
 rm -f "$notes_output/拾片.app/Contents/Resources/ShipianDark.icns" "$notes_output/拾片.app/Contents/Resources/ShipianSystemIconLight.png" "$notes_output/拾片.app/Contents/Resources/ShipianSystemIconDark.png"
 cat > "$notes_output/请先阅读.txt" <<'TEXT'
-拾片 0.5.27 (54) · Apple Silicon · macOS 14+
+拾片 0.5.28 (55) · Apple Silicon · macOS 14+
 
 双击 拾片.app 即可使用，也可拖到“应用程序”。
 使用原 LineNotes Test 的独立应用身份，已有闪念会继续显示。
@@ -20,7 +20,8 @@ cat > "$notes_output/请先阅读.txt" <<'TEXT'
 同图仍在绳上时去重，取下或清空后可以重新挂上；本应用复制的图片不重复收集。
 新挂图片提供三秒撤销；编辑闪念时静默挂图。检测前已被覆盖的复制内容仍可能漏掉。
 隔空投送图片自动挂上默认开启。允许访问「下载」后，拾片会挂上 macOS 标记为隔空投送的新图片。
-如果隔空投送标记晚于文件写入，拾片会短暂复查该文件，确认来源后再挂上。
+隔空投送标记迟到或图片暂时读不到时会重试。同名投送会更新已有卡片。
+「偏好设置 → 截图」显示下载监听状态，目录恢复访问后会自动重连。
 可在「偏好设置 → 截图」关闭隔空投送自动挂图。拾片会记住你的选择。
 图片支持 Command / Ctrl 复制粘贴及从挂绳拖入；正文按松手位置插入，纸面空白处追加到末尾。
 有序和无序列表支持快捷创建、自动编号及两级缩进；默认粘贴匹配光标格式。
@@ -58,6 +59,7 @@ cat > "$notes_output/请先阅读.txt" <<'TEXT'
 最近删除支持一键清空；确认前展示总数量，默认取消，搜索隐藏的条目也计入范围。
 闪念库默认 820×560，可手动缩放，顶部与筛选栏空白可拖动，按钮和搜索框保留原操作。
 挂绳不会盖住当前拾片窗口及其确认框，切换应用时保留原有悬浮行为。
+挂绳面板意外隐藏时可以重新唤出。在全屏期间手动唤出会在退出全屏后展开。
 新建直接进入通用闪念，同一条可混排文字、图片、附件和待办。
 绳尾新增带 × 的小图片入口，悬停可查看说明；点击后短银杆从左向右取下所有截图。
 批量取下保留闪念、录像和原文件（含自有截图文件夹），完成后的撤销提示三秒后消失；启用减少动态效果时直接完成。
@@ -68,7 +70,7 @@ cat > "$notes_output/请先阅读.txt" <<'TEXT'
 图标已替换为确认的「拾片」白天版。夜间资源同时内置，应用运行时图标
 和偏好设置中的品牌图标随应用的浅色/深色/跟随系统设置切换。
 Finder 和未运行时的静态图标使用白天版，不宣称系统范围自动切换。
-关闭窗口不会退出菜单栏应用，再次双击应用可重开闪念库。
+关闭窗口后拾片继续运行，可从 Dock 或菜单栏重开闪念库。
 截图监听与开机启动默认不开启；本次打包不会修改已有用户偏好。
 
 本机 ad hoc 签名，未进行 Apple 公证。其他 Mac 从互联网下载后，
@@ -86,14 +88,14 @@ if [[ "${SHIPIAN_APP_ONLY:-0}" == "1" ]]; then
     echo "Built $notes_output (App only)"
     exit 0
 fi
-ditto -c -k --sequesterRsrc --keepParent "$notes_output/拾片.app" "$notes_output/Shipian-0.5.27-arm64.zip"
+ditto -c -k --sequesterRsrc --keepParent "$notes_output/拾片.app" "$notes_output/Shipian-0.5.28-arm64.zip"
 notes_stage="$(mktemp -d "$notes_build_root/shipian-dmg-stage.XXXXXX")"
 trap 'rm -rf "$notes_stage"' EXIT
 ditto "$notes_output/拾片.app" "$notes_stage/拾片.app"
 cp "$notes_output/请先阅读.txt" "$notes_stage/请先阅读.txt"
 ln -s /Applications "$notes_stage/Applications"
-hdiutil create -quiet -srcfolder "$notes_stage" -volname '拾片' -format UDZO -ov "$notes_output/Shipian-0.5.27-arm64.dmg"
-(cd "$notes_output" && shasum -a 256 Shipian-0.5.27-arm64.zip Shipian-0.5.27-arm64.dmg) > "$notes_output/SHA256SUMS.txt"
+hdiutil create -quiet -srcfolder "$notes_stage" -volname '拾片' -format UDZO -ov "$notes_output/Shipian-0.5.28-arm64.dmg"
+(cd "$notes_output" && shasum -a 256 Shipian-0.5.28-arm64.zip Shipian-0.5.28-arm64.dmg) > "$notes_output/SHA256SUMS.txt"
 # The signed distributable is canonical. Do not leave a second Launchpad-visible build copy.
 rm -rf "$notes_build_root/拾片.app"
 echo "Built $notes_output"

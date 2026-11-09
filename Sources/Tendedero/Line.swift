@@ -232,9 +232,14 @@ final class Line: ObservableObject {
     // MARK: Hanging and dropping
 
     @discardableResult
-    func hang(_ url: URL, quietly: Bool = false, flying: Bool = false) -> UUID? {
-        guard !items.contains(where: { $0.url == url && !$0.falling }),
+    func hang(_ url: URL, quietly: Bool = false, flying: Bool = false, replacingExisting: Bool = false) -> UUID? {
+        let existing = items.firstIndex(where: { $0.url == url && !$0.falling })
+        guard existing == nil || replacingExisting,
               let thumb = makeThumbnail(url) else { return nil }
+        if let existing {
+            items[existing].thumb = thumb
+            return items[existing].id
+        }
         var item = Pegged(url: url, thumb: thumb)
         item.flying = flying
         items.append(item)
