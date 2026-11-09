@@ -82,8 +82,9 @@ extension NSAttributedString.Key {
     @discardableResult static func normalize(_ value: NSMutableAttributedString, selection: NSRange) -> NSRange {
         var selection = selection, cursor = 0
         var kinds: [String?] = [nil, nil], numbers = [0, 0], starts = [0, 0]
-        while cursor < value.length {
-            var paragraph = (value.string as NSString).paragraphRange(for: NSRange(location: cursor, length: 0))
+        var text = value.string as NSString
+        while cursor < text.length {
+            var paragraph = text.paragraphRange(for: NSRange(location: cursor, length: 0))
             var attrs = value.attributes(at: cursor, effectiveRange: nil)
             let kind = attrs[.notesKind] as? String ?? "paragraph"
             let list = isList(kind)
@@ -115,26 +116,31 @@ extension NSAttributedString.Key {
                 selection = map(selection, replacing: range, length: 0)
                 paragraph.length -= range.length
             }
+            if !obsolete.isEmpty { text = value.string as NSString }
             if list {
-                var clean = attrs
-                for key in [.attachment, .notesMarker, .link, .toolTip, .notesPendingLink] as [NSAttributedString.Key] { clean.removeValue(forKey: key) }
                 let replacement = markerRange(in: value, paragraph: paragraph)
                 let markerText = kind == "ordered" ? "\(number).\t" : kind == "checklist" ? "\u{FFFC}\t" : "•\t"
-                if value.attributedSubstring(from: replacement).string != markerText {
+                if text.substring(with: replacement) != markerText {
+                    var clean = attrs
+                    for key in [.attachment, .notesMarker, .link, .toolTip, .notesPendingLink] as [NSAttributedString.Key] { clean.removeValue(forKey: key) }
                     let font = clean[.font] as? NSFont ?? NSFont.systemFont(ofSize: NotesContinuousDocument.bodySize)
                     let marker = NSMutableAttributedString(attributedString: NotesListEditing.marker(kind: kind, number: number, checked: attrs[.notesChecked] as? Bool ?? false, font: font))
                     marker.addAttributes(clean, range: NSRange(location: 0, length: marker.length))
                     value.replaceCharacters(in: replacement, with: marker)
                     selection = map(selection, replacing: replacement, length: marker.length, moveStart: replacement.length == 0)
                     paragraph.length += marker.length - replacement.length
+                    text = value.string as NSString
                 }
-                value.addAttributes([.notesKind: kind, .notesListLevel: level, .notesListNumber: number], range: paragraph)
+                value.updateNotesAttribute(.notesKind, value: kind as NSString, range: paragraph)
+                value.updateNotesAttribute(.notesListLevel, value: NSNumber(value: level), range: paragraph)
+                value.updateNotesAttribute(.notesListNumber, value: NSNumber(value: number), range: paragraph)
             }
             if kind == "ordered" {
-                value.addAttributes([.notesListStart: starts[level], .notesListStartLevel: level], range: paragraph)
+                value.updateNotesAttribute(.notesListStart, value: NSNumber(value: starts[level]), range: paragraph)
+                value.updateNotesAttribute(.notesListStartLevel, value: NSNumber(value: level), range: paragraph)
             } else {
-                value.removeAttribute(.notesListStart, range: paragraph)
-                value.removeAttribute(.notesListStartLevel, range: paragraph)
+                value.updateNotesAttribute(.notesListStart, value: nil, range: paragraph)
+                value.updateNotesAttribute(.notesListStartLevel, value: nil, range: paragraph)
             }
             cursor = NSMaxRange(paragraph)
         }

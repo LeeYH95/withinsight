@@ -32,7 +32,8 @@ final class NoteThumbnailTests: XCTestCase {
         for y in Int(rect.minY * scale)..<Int(rect.maxY * scale) {
             for x in Int(rect.minX * scale)..<Int(rect.maxX * scale) {
                 guard let c = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else { continue }
-                if c.alphaComponent > 0.5 && max(c.redComponent, c.greenComponent, c.blueComponent) < 0.3 { count += 1 }
+                // The completed checklist ink is muted, while the paper stays light.
+                if c.alphaComponent > 0.5 && max(c.redComponent, c.greenComponent, c.blueComponent) < 0.62 { count += 1 }
             }
         }
         return count

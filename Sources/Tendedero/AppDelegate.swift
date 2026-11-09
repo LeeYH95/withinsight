@@ -172,7 +172,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             wanted = true
             refresh()
             reveal(pinned: true)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            // The store and rope are ready. Give the current launch callback a
+            // chance to return, then open the window on the next main turn.
+            DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 if LaunchOptions.demoRope {
                     self.loadingWindow?.orderOut(nil); self.loadingWindow = nil
@@ -184,7 +186,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     LaunchTrace.mark("editor-created")
                 } else { self.workspace.showLibrary(); LaunchTrace.mark("library-created") }
                 self.loadingWindow?.orderOut(nil); self.loadingWindow = nil
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                DispatchQueue.main.async {
                     LaunchTrace.mark("ui-responsive")
                 }
             }
