@@ -6,6 +6,34 @@ import CoreServices
 /// (or CleanShot, or anything else) and the line just picks them up.
 final class ScreenshotWatcher {
     enum ImageSource { case screenshots, folder, airDrop }
+    enum Availability: Equatable { case connecting, listening, unavailable }
+
+    private struct FileVersion: Equatable {
+        let device: Int32
+        let inode: UInt64
+        let size: Int64
+        let modified: timespec
+
+        init?(_ url: URL) {
+            var info = stat()
+            guard lstat(url.path, &info) == 0, info.st_mode & S_IFMT == S_IFREG else { return nil }
+            device = info.st_dev
+            inode = info.st_ino
+            size = info.st_size
+            modified = info.st_mtimespec
+        }
+
+        static func == (left: Self, right: Self) -> Bool {
+            left.device == right.device && left.inode == right.inode && left.size == right.size
+                && left.modified.tv_sec == right.modified.tv_sec && left.modified.tv_nsec == right.modified.tv_nsec
+        }
+    }
+
+    private struct AirDropScan {
+        var files: [String: FileVersion]
+        var waiting: [String: TimeInterval] = [:]
+        var arrivals: [(url: URL, version: FileVersion)] = []
+    }
 
     let folder: URL
     private let imageSource: ImageSource
@@ -16,7 +44,9 @@ final class ScreenshotWatcher {
     /// Tendedero's own folder, where nothing else is saved.
     private let acceptsRecordings: Bool
     private var known: Set<String>?
-    private var waitingForAirDropMetadata: [String: TimeInterval] = [:]
+    private var knownAirDropFiles: [String: FileVersion]?
+    private var waitingForAirDrop: [String: TimeInterval] = [:]
+    private let launchDate: Date
     private var source: DispatchSourceFileSystemObject?
     private var pending: DispatchWorkItem?
     /// A `start()` that is still waiting on the folder, off the main thread.
@@ -27,8 +57,12 @@ final class ScreenshotWatcher {
     private var missed = false
     /// `stop()` arrived while one of the two was still pending.
     private var stopped = false
+    private var generation = 0
+    private var availability: Availability?
     private let onNew: (URL) -> Void
     private let onChange: () -> Void
+    private let onAirDropImage: ((URL) -> Bool)?
+    private let onAvailability: ((Availability) -> Void)?
 
     private static let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "heic", "tif", "tiff", "gif", "webp"]
 
@@ -37,10 +71,15 @@ final class ScreenshotWatcher {
     /// Watches the system capture folder, a user-selected image folder, or
     /// the new AirDrop images in Downloads.
     init(folder: URL? = nil, imageSource: ImageSource = .screenshots,
-         onNew: @escaping (URL) -> Void, onChange: @escaping () -> Void) {
+         since: Date = Date(), onAirDropImage: ((URL) -> Bool)? = nil,
+         onAvailability: ((Availability) -> Void)? = nil,
+         onNew: @escaping (URL) -> Void = { _ in }, onChange: @escaping () -> Void) {
         self.onNew = onNew
         self.onChange = onChange
         self.imageSource = imageSource
+        launchDate = since
+        self.onAirDropImage = onAirDropImage
+        self.onAvailability = onAvailability
         self.folder = folder ?? Self.screenshotFolder()
         onlyTaggedScreenshots = imageSource == .screenshots
             && self.folder.standardizedFileURL.path == Self.desktop.standardizedFileURL.path
@@ -64,11 +103,6 @@ final class ScreenshotWatcher {
         return fm.homeDirectoryForCurrentUser.appendingPathComponent("Desktop", isDirectory: true)
     }
 
-    /// Anything created after the app launched counts as new, even if it
-    /// landed before the watcher was ready (macOS may be asking for Desktop
-    /// access at that moment).
-    private let launchDate = Date()
-
     /// The folder is opened off the main thread, because `open()` blocks while
     /// macOS asks whether Tendedero may look inside it. On the Desktop that is
     /// the consent prompt, and it waits for an answer. Asking from
@@ -79,28 +113,49 @@ final class ScreenshotWatcher {
         stopped = false
         guard source == nil, !starting else { return }
         starting = true
+        if availability == nil { setAvailability(.connecting) }
+        let request = generation
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
             let fd = open(self.folder.path, O_EVTONLY)
-            DispatchQueue.main.async { self.watch(fd) }
+            let error = fd < 0 ? errno : 0
+            DispatchQueue.main.async {
+                guard self.generation == request else {
+                    if fd >= 0 { close(fd) }
+                    return
+                }
+                self.watch(fd, error: error)
+            }
         }
     }
 
     /// Starts watching, then reads the folder. The watcher is live before the
     /// listing begins, so a capture that lands in between is not lost.
-    private func watch(_ fd: Int32) {
+    private func watch(_ fd: Int32, error: Int32) {
         starting = false
         guard !stopped else {
             if fd >= 0 { close(fd) }
             return
         }
         guard fd >= 0 else {
-            NSLog("Tendedero: cannot watch \(folder.path)")
+            if imageSource == .airDrop {
+                reconnect(error: error)
+            } else {
+                NSLog("Tendedero: cannot watch \(folder.path)")
+            }
             return
         }
         let src = DispatchSource.makeFileSystemObjectSource(
             fileDescriptor: fd, eventMask: [.write, .rename, .delete], queue: .main)
-        src.setEventHandler { [weak self] in self?.scheduleScan() }
+        let request = generation
+        src.setEventHandler { [weak self] in
+            guard let self, self.generation == request, let source = self.source else { return }
+            if self.imageSource == .airDrop, !source.data.intersection([.rename, .delete]).isEmpty {
+                self.reconnect(error: ENOENT)
+            } else {
+                self.scheduleScan()
+            }
+        }
         src.setCancelHandler { close(fd) }
         src.resume()
         source = src
@@ -112,12 +167,39 @@ final class ScreenshotWatcher {
     /// afterwards is dropped.
     func stop() {
         stopped = true
+        waitingForAirDrop.removeAll()
+        availability = nil
+        cancelWork()
+    }
+
+    private func cancelWork() {
+        generation += 1
+        starting = false
+        listing = false
         missed = false
-        waitingForAirDropMetadata.removeAll()
         pending?.cancel()
         pending = nil
         source?.cancel()
         source = nil
+    }
+
+    private func setAvailability(_ state: Availability) {
+        guard imageSource == .airDrop, availability != state else { return }
+        availability = state
+        onAvailability?(state)
+    }
+
+    private func reconnect(error: Int32) {
+        if availability != .unavailable { NSLog("拾片 AirDrop 下载目录暂不可用 (\(error))") }
+        cancelWork()
+        setAvailability(.unavailable)
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, !self.stopped else { return }
+            self.pending = nil
+            self.start()
+        }
+        pending = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: work)
     }
 
     private func scheduleScan(retryAirDropOnly: Bool = false) {
@@ -129,7 +211,7 @@ final class ScreenshotWatcher {
         }
         pending = work
         // macOS writes a hidden temp file and renames it; give it a moment.
-        DispatchQueue.main.asyncAfter(deadline: .now() + (retryAirDropOnly ? 0.5 : 0.2), execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + (retryAirDropOnly ? 1 : 0.2), execute: work)
     }
 
     /// Reads the folder off the main thread. Sorting by creation date and
@@ -141,81 +223,112 @@ final class ScreenshotWatcher {
             return
         }
         listing = true
+        let request = generation
         let previous = known
-        let waiting = waitingForAirDropMetadata
+        let previousAirDropFiles = knownAirDropFiles
+        let waiting = waitingForAirDrop
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
-            let files = retryAirDropOnly
-                ? waiting.keys.map { URL(fileURLWithPath: $0) }
-                : self.listFolder()
-            let seen = retryAirDropOnly ? nil : Set(files.map(\.path))
-            let result: (images: [URL], waiting: [String: TimeInterval])
             if self.imageSource == .airDrop {
-                result = self.airDropArrivals(in: files, previouslySeen: previous, waiting: waiting)
+                do {
+                    let files = try retryAirDropOnly
+                        ? waiting.keys.map { URL(fileURLWithPath: $0) } : self.listFolder()
+                    let scan = self.scanAirDrop(files, previous: previousAirDropFiles, waiting: waiting, retryOnly: retryAirDropOnly)
+                    DispatchQueue.main.async {
+                        guard self.generation == request else { return }
+                        self.adoptAirDrop(scan, fullScan: !retryAirDropOnly)
+                    }
+                } catch {
+                    let code = (error as NSError).code
+                    DispatchQueue.main.async {
+                        guard self.generation == request else { return }
+                        self.reconnect(error: Int32(clamping: code))
+                    }
+                }
             } else {
+                let files = (try? self.listFolder()) ?? []
                 let base = previous ?? Set(files.filter { self.creationDate($0) < self.launchDate }.map(\.path))
-                result = (files.filter { !base.contains($0.path) && self.isCandidate($0) }, [:])
+                let candidates = files.filter { !base.contains($0.path) && self.isCandidate($0) }
+                let seen = Set(files.map(\.path))
+                DispatchQueue.main.async {
+                    guard self.generation == request else { return }
+                    for url in candidates { self.onNew(url) }
+                    if self.known != nil { self.onChange() }
+                    self.known = seen
+                    self.finishScan()
+                }
             }
-            DispatchQueue.main.async { self.adopt(seen, result.images, waiting: result.waiting) }
         }
     }
 
     /// Takes a finished listing, reports what is new, then runs the listing
     /// that was asked for while this one was in flight.
-    private func adopt(_ seen: Set<String>?, _ candidates: [URL], waiting: [String: TimeInterval]) {
+    private func finishScan() {
         listing = false
         guard !stopped else { return }
-        for url in candidates { onNew(url) }
-        if let seen {
-            let first = known == nil
-            known = seen
-            if !first { onChange() }
-        }
-        waitingForAirDropMetadata = waiting
         if missed {
             missed = false
             refresh()
-        } else if !waiting.isEmpty, pending == nil {
+        } else if !waitingForAirDrop.isEmpty, pending == nil {
             scheduleScan(retryAirDropOnly: true)
         }
     }
 
-    private func airDropArrivals(in files: [URL], previouslySeen: Set<String>?, waiting: [String: TimeInterval])
-        -> (images: [URL], waiting: [String: TimeInterval]) {
+    private func scanAirDrop(_ files: [URL], previous: [String: FileVersion]?,
+                             waiting: [String: TimeInterval], retryOnly: Bool) -> AirDropScan {
         let now = ProcessInfo.processInfo.systemUptime
-        var images: [URL] = []
-        var stillWaiting: [String: TimeInterval] = [:]
-        for url in files where Self.imageExtensions.contains(url.pathExtension.lowercased()) {
+        var scan = AirDropScan(files: retryOnly ? previous ?? [:] : [:])
+        for url in files {
+            let ext = url.pathExtension.lowercased()
+            guard Self.imageExtensions.contains(ext) || ext == "heif" || ext == "dng",
+                  let version = FileVersion(url) else { continue }
             let path = url.path
-            let deadline = waiting[path]
-            guard deadline.map({ $0 > now }) ?? (previouslySeen?.contains(path) != true),
-                  let values = try? url.resourceValues(forKeys: [
-                    .isRegularFileKey, .isSymbolicLinkKey, .quarantinePropertiesKey, .addedToDirectoryDateKey
-                  ]),
-                  values.isRegularFile == true, values.isSymbolicLink != true else { continue }
+            scan.files[path] = version
+            let changed = previous?[path] != version
+            guard changed || waiting[path] != nil else { continue }
+            let deadline = changed ? now + 60 : waiting[path] ?? now + 60
+            guard deadline > now else { continue }
 
-            let metadata = values.quarantineProperties
-            let type = metadata?[kLSQuarantineTypeKey as String] as? String
-            if let type, type != "LSQuarantineTypeAirDrop" { continue }
-            if type == "LSQuarantineTypeAirDrop", let received = metadata?[kLSQuarantineTimeStampKey as String] as? Date {
-                // AirDrop preserves the photo's creation date. Quarantine records
-                // the receive time with second-level precision.
-                if received.timeIntervalSince1970 >= floor(launchDate.timeIntervalSince1970) {
-                    images.append(url)
-                }
-            } else if deadline != nil || previouslySeen != nil ||
-                        (values.addedToDirectoryDate ?? .distantPast) >= launchDate {
-                // The directory can report an arrival before its source is set.
-                // Retry just this path for a few seconds, without relisting Downloads.
-                stillWaiting[path] = deadline ?? now + 5
+            let values = try? url.resourceValues(forKeys: [.quarantinePropertiesKey, .addedToDirectoryDateKey])
+            let metadata = values?.quarantineProperties
+            let received = metadata?[kLSQuarantineTimeStampKey as String] as? Date
+            if metadata?[kLSQuarantineTypeKey as String] as? String == "LSQuarantineTypeAirDrop",
+               let received, received.timeIntervalSince1970 >= floor(launchDate.timeIntervalSince1970) {
+                scan.arrivals.append((url, version))
+                scan.waiting[path] = deadline
+            } else if previous != nil || (values?.addedToDirectoryDate ?? .distantPast) >= launchDate {
+                // A new file can gain or change its source marker after the
+                // directory event. Until then it must not be treated as AirDrop.
+                scan.waiting[path] = deadline
             }
         }
-        return (images, stillWaiting)
+        return scan
     }
 
-    private func listFolder() -> [URL] {
-        let urls = (try? FileManager.default.contentsOfDirectory(
-            at: folder, includingPropertiesForKeys: [.creationDateKey], options: [.skipsHiddenFiles])) ?? []
+    private func adoptAirDrop(_ scan: AirDropScan, fullScan: Bool) {
+        let first = knownAirDropFiles == nil
+        knownAirDropFiles = scan.files
+        waitingForAirDrop = scan.waiting
+        for (url, version) in scan.arrivals where FileVersion(url) == version {
+            let accepted: Bool
+            if let onAirDropImage {
+                accepted = onAirDropImage(url)
+            } else {
+                onNew(url)
+                accepted = true
+            }
+            if accepted { waitingForAirDrop.removeValue(forKey: url.path) }
+        }
+        if fullScan {
+            setAvailability(.listening)
+            if !first { onChange() }
+        }
+        finishScan()
+    }
+
+    private func listFolder() throws -> [URL] {
+        let urls = try FileManager.default.contentsOfDirectory(
+            at: folder, includingPropertiesForKeys: [.creationDateKey], options: [.skipsHiddenFiles])
         return urls.sorted { creationDate($0) < creationDate($1) }
     }
 

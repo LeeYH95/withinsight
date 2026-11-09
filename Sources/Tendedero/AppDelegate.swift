@@ -8,6 +8,7 @@ import NotesCore
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+    private let launchedAt = Date()
     private let line = Line(restoring: false)
     private var notes: NotesStore!
     private var workspace: NotesWorkspace!
@@ -25,6 +26,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// screenshot app saves to.
     private var folderWatchers: [ScreenshotWatcher] = []
     private var airDropWatcher: ScreenshotWatcher?
+    private var airDropAvailability: ScreenshotWatcher.Availability?
     static let hangAirDropImagesKey = "notesHangAirDropImages"
 
     static func hangsAirDropImages(in defaults: UserDefaults = .standard) -> Bool {
@@ -36,11 +38,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var cancellables = Set<AnyCancellable>()
     private var mouseTimer: Timer?
 
-    /// Whether the panel is ordered in. It can be in and still tucked away
-    /// above the top edge, like an auto-hiding Dock.
+    /// Whether the line is eligible to appear on the current screen.
     private var isPresent = false
     /// Whether the line has slid down into view.
     private var isRevealed = false
+    private var isLineShowing: Bool { isRevealed && panel.isVisible }
+    private var manualRevealPending = false
     /// Opened on purpose with the shortcut or the menu: it stays down until
     /// the cursor has visited it and left, or the shortcut is pressed again.
     private var pinned = false
@@ -115,7 +118,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if Inbox.isEnabled { Inbox.apply() }
             restoreSettingsOnTermination()
             startWatcher()
-            startAirDropWatcher()
+            startAirDropWatcher(since: launchedAt)
         }
         clipboardWatcher = ClipboardWatcher(isHanging: { [weak self] url in
             self?.line.items.contains(where: { $0.url == url && !$0.falling }) == true
@@ -163,6 +166,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             MainActor.assumeIsolated {
                 self?.panel.placeOnScreen()
                 self?.updateCapacity()
+                self?.refresh()
             }
         }
 
@@ -249,16 +253,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    private func startAirDropWatcher() {
+    private func startAirDropWatcher(since: Date = Date()) {
         airDropWatcher?.stop()
         airDropWatcher = nil
-        guard !LaunchOptions.demo, Self.hangsAirDropImages(),
-              let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first else { return }
+        airDropAvailability = nil
+        guard !LaunchOptions.demo, Self.hangsAirDropImages() else { return }
+        guard let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first else {
+            updateAirDropAvailability(.unavailable)
+            return
+        }
         let watcher = ScreenshotWatcher(folder: downloads, imageSource: .airDrop,
-            onNew: { [weak self] url in self?.hangCapture(url) },
+            since: since,
+            onAirDropImage: { [weak self] url in self?.hangAirDropImage(url) ?? false },
+            onAvailability: { [weak self] state in self?.updateAirDropAvailability(state) },
             onChange: { [weak self] in self?.line.prune() })
         airDropWatcher = watcher
         watcher.start()
+    }
+
+    private func updateAirDropAvailability(_ state: ScreenshotWatcher.Availability) {
+        airDropAvailability = state
+        NotificationCenter.default.post(name: NotesSettingsSnapshot.airDropStatusDidChange, object: nil)
+    }
+
+    private var airDropStatusText: String? {
+        switch airDropAvailability {
+        case .connecting: return "正在连接「下载」…"
+        case .listening: return "正在监听「下载」"
+        case .unavailable: return "暂时无法访问「下载」，拾片会自动重试。请检查系统设置 → 隐私与安全性 → 文件与文件夹。"
+        case nil: return nil
+        }
     }
 
     private func setAirDropWatching(_ enabled: Bool) {
@@ -375,6 +399,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: The capture flying to the line
 
+    private func hangAirDropImage(_ url: URL) -> Bool {
+        guard line.hang(url, replacingExisting: true) != nil else { return false }
+        comeDown(on: nil)
+        return true
+    }
+
     /// A new screenshot lifts off from where it was taken and flies to its
     /// place on the line. Without a known capture area it simply drops in.
     private func hangCapture(_ url: URL) {
@@ -464,11 +494,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// Decides whether the panel is ordered in at all: something to show,
     /// and no full screen app on that screen.
-    private func refresh() {
-        let blocked = panel.screen.map(FullScreen.blocksLine(on:))
-            ?? LinePanel.screenUnderPointer().map(FullScreen.blocksLine(on:)) ?? false
+    private func refresh(on target: NSScreen? = nil) {
+        let screen = target ?? panel.screen ?? LinePanel.screenUnderPointer()
+        let blocked = screen.map(FullScreen.blocksLine(on:)) ?? false
         if wanted && !blocked {
             present()
+            if manualRevealPending {
+                manualRevealPending = false
+                reveal(pinned: true)
+            } else if isRevealed && !panel.isVisible {
+                panel.orderFrontRegardless()
+            }
         } else {
             dismiss()
         }
@@ -481,8 +517,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard !isPresent else { return }
         isPresent = true
         panel.alphaValue = 1
-        // The window itself only comes in while the line is down; see setRevealed.
-        if isRevealed { panel.orderFrontRegardless() }
     }
 
     private func dismiss() {
@@ -500,7 +534,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if pinned { self.pinned = true }
         if seconds > 0 { peekUntil = Date().addingTimeInterval(seconds) }
         awaySince = nil
-        setRevealed(true)
+        if isRevealed {
+            if !panel.isVisible { panel.orderFrontRegardless() }
+        } else {
+            setRevealed(true)
+        }
     }
 
     private func setRevealed(_ on: Bool) {
@@ -532,7 +570,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func toggle() {
-        if isRevealed {
+        if isLineShowing {
+            manualRevealPending = false
             setRevealed(false)
             if line.liveCount == 0 {
                 keepOpen = false
@@ -542,10 +581,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else {
             keepOpen = true
             wanted = true
-            panel.placeOnScreen()
+            manualRevealPending = true
+            let screen = LinePanel.screenUnderPointer()
+            panel.placeOnScreen(screen)
             updateCapacity()
-            refresh()
-            reveal(pinned: true)
+            refresh(on: screen)
         }
     }
 
@@ -610,7 +650,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let inMenuBar = screenUnderPointer.map { NSMouseInRect(mouse, Self.menuBarBand(of: $0), false) } ?? false
         if !inMenuBar { menuBarSuppressed = false }
 
-        guard isRevealed else {
+        guard isLineShowing else {
             // Resting in the menu bar brings the line down on that screen.
             // Pushing against the top edge is part of it, and it also works
             // when another display sits above and the pointer never stops.
@@ -624,7 +664,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         panel.placeOnScreen()
                         updateCapacity()
                     }
-                    refresh()
+                    refresh(on: screen)
                     reveal()
                 }
             } else {
@@ -769,7 +809,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(ClosureMenuItem("闪念设置…", key: ",") { [weak self] in self?.workspace.showSettings() })
         menu.addItem(.separator())
 
-        let toggleItem = ClosureMenuItem(isRevealed ? L("Hide line") : L("Show line")) { [weak self] in
+        let toggleItem = ClosureMenuItem(isLineShowing ? L("Hide line") : L("Show line")) { [weak self] in
             self?.toggle()
         }
         if let shortcut = Shortcut.current, shortcut.key.count == 1 {
@@ -979,6 +1019,7 @@ private extension AppDelegate {
                         watchesScreenshots: !LaunchOptions.demo && UserDefaults.standard.bool(forKey: "notesWatchScreenshots"),
                         copiesImages: !LaunchOptions.demo && ClipboardWatcher.isEnabled,
                         hangsAirDropImages: !LaunchOptions.demo && Self.hangsAirDropImages(),
+                        airDropStatus: self?.airDropStatusText,
                         loginEnabled: !LaunchOptions.demo && SMAppService.mainApp.status == .enabled,
                         loginNeedsApproval: !LaunchOptions.demo && SMAppService.mainApp.status == .requiresApproval,
                         screenshotFolder: self?.watcher?.folder ?? ScreenshotWatcher.screenshotFolder(),
