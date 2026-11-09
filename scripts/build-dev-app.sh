@@ -57,7 +57,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <key>NSHighResolutionCapable</key><true/>
 <key>NSDesktopFolderUsageDescription</key><string>在你启用截图监听后，访问你选择的截图目录。</string>
 <key>NSDocumentsFolderUsageDescription</key><string>访问你选择的截图或附件目录。</string>
-<key>NSDownloadsFolderUsageDescription</key><string>访问你主动选择的文件。</string>
+<key>NSDownloadsFolderUsageDescription</key><string>读取你选择的文件，或在开启隔空投送自动挂图后识别下载文件夹中新收到的图片。</string>
 </dict></plist>
 PLIST
 plutil -replace CFBundleName -string "$notes_app_name" "$APP/Contents/Info.plist"

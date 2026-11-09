@@ -24,6 +24,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Folders chosen in "Also watch folders", like the one another
     /// screenshot app saves to.
     private var folderWatchers: [ScreenshotWatcher] = []
+    private var airDropWatcher: ScreenshotWatcher?
+    static let hangAirDropImagesKey = "notesHangAirDropImages"
+
+    static func hangsAirDropImages(in defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: hangAirDropImagesKey) as? Bool ?? true
+    }
     private var clipboardWatcher: ClipboardWatcher!
     private var signalSources: [DispatchSourceSignal] = []
     private var hotKey: HotKey?
@@ -109,6 +115,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if Inbox.isEnabled { Inbox.apply() }
             restoreSettingsOnTermination()
             startWatcher()
+            startAirDropWatcher()
         }
         clipboardWatcher = ClipboardWatcher(isHanging: { [weak self] url in
             self?.line.items.contains(where: { $0.url == url && !$0.falling }) == true
@@ -232,12 +239,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // image both report hangs once.
         for folder in Self.extraFolders {
             let extra = ScreenshotWatcher(
-                folder: folder, anyImage: true,
+                folder: folder, imageSource: .folder,
                 onNew: { [weak self] url in self?.hangCapture(url) },
                 onChange: { [weak self] in self?.line.prune() })
             extra.start()
             folderWatchers.append(extra)
         }
+    }
+
+    private func startAirDropWatcher() {
+        airDropWatcher?.stop()
+        airDropWatcher = nil
+        guard !LaunchOptions.demo, Self.hangsAirDropImages(),
+              let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first else { return }
+        let watcher = ScreenshotWatcher(folder: downloads, imageSource: .airDrop,
+            onNew: { [weak self] url in self?.hangCapture(url) },
+            onChange: { [weak self] in self?.line.prune() })
+        airDropWatcher = watcher
+        watcher.start()
+    }
+
+    private func setAirDropWatching(_ enabled: Bool) {
+        guard !LaunchOptions.demo else { return }
+        UserDefaults.standard.set(enabled, forKey: Self.hangAirDropImagesKey)
+        startAirDropWatcher()
     }
 
     /// Up to three folders: enough for another screenshot app or an export
@@ -951,6 +976,7 @@ private extension AppDelegate {
                     NotesSettingsSnapshot(
                         watchesScreenshots: !LaunchOptions.demo && UserDefaults.standard.bool(forKey: "notesWatchScreenshots"),
                         copiesImages: !LaunchOptions.demo && ClipboardWatcher.isEnabled,
+                        hangsAirDropImages: !LaunchOptions.demo && Self.hangsAirDropImages(),
                         loginEnabled: !LaunchOptions.demo && SMAppService.mainApp.status == .enabled,
                         loginNeedsApproval: !LaunchOptions.demo && SMAppService.mainApp.status == .requiresApproval,
                         screenshotFolder: self?.watcher?.folder ?? ScreenshotWatcher.screenshotFolder(),
@@ -960,6 +986,7 @@ private extension AppDelegate {
                 },
                 watchScreenshots: { [weak self] enabled in self?.setScreenshotWatching(enabled) },
                 copyImages: { [weak self] enabled in self?.setClipboard(enabled) },
+                watchAirDrop: { [weak self] enabled in self?.setAirDropWatching(enabled) },
                 toggleLogin: { guard !LaunchOptions.demo else { return }; Self.toggleLaunchAtLogin() },
                 chooseFolder: { [weak self] in guard !LaunchOptions.demo else { return }; self?.chooseExtraFolder() },
                 removeFolder: { [weak self] folder in
