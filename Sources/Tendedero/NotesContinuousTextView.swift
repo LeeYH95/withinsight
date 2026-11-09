@@ -7,6 +7,7 @@ import UniformTypeIdentifiers
 /// One native text system owns the entire body, including selection and IME composition.
 @MainActor final class NotesContinuousTextView: NotesTextView {
     let linkPastes = NotesLinkPasteController()
+    let bodyEncodingCache = NotesContinuousDocument.BodyEncodingCache()
     private var ownedStorage: NSTextStorage?
     var trailingAttributes: [NSAttributedString.Key: Any] = [:]
     var readingScale: CGFloat = 1
@@ -35,6 +36,8 @@ import UniformTypeIdentifiers
     }
     var loading = false
     private var normalizing = false
+    private var publicationRevision = 0
+    private var typingInsertion: NSRange?
     private var renderedWidth: CGFloat = 0
     var onLayout: (() -> Void)?
 
@@ -101,7 +104,13 @@ import UniformTypeIdentifiers
         imageEntrance?.invalidate()
         let selection = selectedRange()
         refreshVisibleImages(note)
-        textStorage?.setAttributedString(NotesContinuousDocument.render(note, scale:readingScale, width:max(150,bounds.width), image: { self.visibleImages[$0.id] }))
+        if let storage = textStorage {
+            var reusableBlocks: [String: NoteBlock] = [:]
+            storage.setAttributedString(NotesContinuousDocument.render(note, scale: readingScale, width: max(150, bounds.width),
+                reusable: { reusableBlocks[$0.id.uuidString] = $0 }, image: { self.visibleImages[$0.id] }))
+            bodyEncodingCache.seed(from: storage, scale: readingScale, blocks: reusableBlocks)
+        }
+        updateCompletedTaskAppearance()
         let length = textStorage?.length ?? 0
         setSelectedRange(NSRange(location:min(selection.location,length), length:min(selection.length,max(0,length - min(selection.location,length)))))
         trailingAttributes = defaultAttributes()
@@ -172,15 +181,38 @@ import UniformTypeIdentifiers
         if !loading, !hasMarkedText(), !normalizing, let storage = textStorage {
             normalizing = true
             let typing = typingAttributes
-            let selection = NotesListEditing.normalize(storage, selection: selectedRange())
-            NotesContinuousDocument.normalizeLayout(storage, scale:readingScale)
+            storage.beginEditing()
+            let paragraph = normalizeTypingInsertion(in: storage)
+            let selection = paragraph == nil ? NotesListEditing.normalize(storage, selection: selectedRange()) : selectedRange()
+            NotesContinuousDocument.normalizeLayout(storage, scale: readingScale, paragraph: paragraph)
+            storage.endEditing()
+            updateCompletedTaskAppearance(in: paragraph)
             setSelectedRange(selection); typingAttributes = typing; cleanTypingAttributes()
             normalizing = false
         }
         super.didChangeText()
-        if !loading, !hasMarkedText() { publishChange(); onLayout?(); contextTools.selectionChanged() }
+        if !loading, !hasMarkedText() {
+            publicationRevision &+= 1
+            publishChange(); onLayout?(); contextTools.selectionChanged()
+        }
+    }
+    private func normalizeTypingInsertion(in storage: NSTextStorage) -> NSRange? {
+        guard let insertion = typingInsertion, NSMaxRange(insertion) <= storage.length,
+              selectedRange() == NSRange(location: NSMaxRange(insertion), length: 0) else { return nil }
+        let paragraph = (storage.string as NSString).paragraphRange(for: insertion)
+        guard paragraph.location < insertion.location, NSMaxRange(insertion) <= NSMaxRange(paragraph) else { return nil }
+        let attrs = storage.attributes(at: insertion.location - 1, effectiveRange: nil)
+        guard attrs[.notesMarker] as? Bool != true, attrs[.attachment] == nil else { return nil }
+        // Inserting within an existing text run leaves markers and numbering
+        // intact. Only the inserted character needs the paragraph metadata.
+        for key in [.notesBlock, .notesKind, .notesChecked, .notesHeading, .notesListLevel,
+                    .notesListNumber, .notesListStart, .notesListStartLevel] as [NSAttributedString.Key] {
+            storage.updateNotesAttribute(key, value: attrs[key] as? NSObject, range: insertion)
+        }
+        return paragraph
     }
     override func insertText(_ insertString: Any, replacementRange: NSRange) {
+        let publicationBeforeInsertion = publicationRevision
         cleanTypingAttributes()
         if !hasMarkedText(), let value = insertString as? String, value == " ", convertListShortcut(replacementRange: replacementRange) { return }
         if !hasMarkedText(), let value = insertString as? String, !value.isEmpty {
@@ -217,14 +249,64 @@ import UniformTypeIdentifiers
                     storage.setAttributes(attrs, range: inserted)
                     didChangeText()
                 }
-            } else { super.insertText(insertString, replacementRange: replacementRange) }
+            } else {
+                if insertion.length == 0, insertion.location > 0, text.utf16.count == 1,
+                   text.rangeOfCharacter(from: .newlines) == nil {
+                    typingInsertion = NSRange(location: insertion.location, length: 1)
+                }
+                defer { typingInsertion = nil }
+                super.insertText(insertString, replacementRange: replacementRange)
+            }
         } else { super.insertText(insertString, replacementRange:replacementRange) }
-        if !hasMarkedText() { publishChange(); onLayout?(); linkPastes.flushCompletedTitles(in: self) }
+        if !hasMarkedText() {
+            // The native edit usually publishes from didChangeText. An input
+            // method can commit without that callback, so retain the fallback.
+            if publicationRevision == publicationBeforeInsertion { publishChange(); onLayout?() }
+            linkPastes.flushCompletedTitles(in: self)
+        }
     }
     override func unmarkText() {
         super.unmarkText()
-        if !loading { cleanTypingAttributes(); publishChange(); onLayout?() }
+        if !loading {
+            updateCompletedTaskAppearance()
+            cleanTypingAttributes(); publishChange(); onLayout?()
+        }
         linkPastes.flushCompletedTitles(in: self)
+    }
+    private func updateCompletedTaskAppearance(in paragraph: NSRange? = nil) {
+        guard let storage = textStorage, let layout = layoutManager else { return }
+        let muted = NSColor(NotesTheme.muted)
+        let strike = NSNumber(value: NSUnderlineStyle.single.rawValue)
+        // Draw completion separately from the RTF and clipboard styles.
+        func update(_ key: NSAttributedString.Key, value: NSObject, enabled: Bool, in range: NSRange) {
+            var cursor = range.location
+            while cursor < NSMaxRange(range) {
+                var run = NSRange()
+                let current = layout.temporaryAttribute(key, atCharacterIndex: cursor, longestEffectiveRange: &run, in: range) as? NSObject
+                if enabled && current != value {
+                    layout.addTemporaryAttribute(key, value: value, forCharacterRange: run)
+                } else if !enabled && current == value {
+                    layout.removeTemporaryAttribute(key, forCharacterRange: run)
+                }
+                cursor = NSMaxRange(run)
+            }
+        }
+        let text = storage.string as NSString
+        let range = paragraph ?? NSRange(location: 0, length: storage.length)
+        storage.enumerateAttributes(in: range) { attributes, run, _ in
+            let completed = attributes[.notesKind] as? String == "checklist"
+                && attributes[.notesChecked] as? Bool == true && attributes[.notesMarker] as? Bool != true
+            var body = run
+            if text.character(at: NSMaxRange(body) - 1) == 10 { body.length -= 1 }
+            let hasManualStrike = (attributes[.strikethroughStyle] as? Int ?? 0) != 0
+            update(.strikethroughStyle, value: strike, enabled: completed && !hasManualStrike, in: body)
+            update(.foregroundColor, value: muted, enabled: completed && attributes[.link] == nil, in: body)
+            if body.length != run.length {
+                let separator = NSRange(location: NSMaxRange(body), length: 1)
+                update(.strikethroughStyle, value: strike, enabled: false, in: separator)
+                update(.foregroundColor, value: muted, enabled: false, in: separator)
+            }
+        }
     }
     private func paragraphRanges() -> [NSRange] {
         let ns = string as NSString, selection = selectedRange()
@@ -1070,7 +1152,8 @@ private final class NotesBodyLayoutManager: NSLayoutManager {
               !view.hasMarkedText(), charRange.length > 0,
               NSIntersectionRange(charRange, view.selectedRange()) == charRange,
               color == Self.selectionColor || color == .selectedTextBackgroundColor ||
-                color == .unemphasizedSelectedTextBackgroundColor,
+                color == .unemphasizedSelectedTextBackgroundColor || color == .selectedContentBackgroundColor ||
+                color == .unemphasizedSelectedContentBackgroundColor,
               let storage = textStorage, NSMaxRange(charRange) <= storage.length else {
             super.fillBackgroundRectArray(rectArray, count: rectCount, forCharacterRange: charRange, color: color)
             return
@@ -1081,16 +1164,21 @@ private final class NotesBodyLayoutManager: NSLayoutManager {
             guard index < numberOfGlyphs else { return rect }
             var lineGlyphs = NSRange()
             let line = lineFragmentRect(forGlyphAt: index, effectiveRange: &lineGlyphs)
-            let characters = NSIntersectionRange(charRange, characterRange(forGlyphRange: lineGlyphs, actualGlyphRange: nil))
-            guard characters.length > 0 else { return rect }
-            var font: NSFont?
-            var includesAttachment = false
-            storage.enumerateAttributes(in: characters) { attributes, _, stop in
-                if attributes[.attachment] != nil { includesAttachment = true; stop.pointee = true }
-                if let candidate = attributes[.font] as? NSFont, candidate.pointSize > (font?.pointSize ?? 0) { font = candidate }
+            let characters = characterRange(forGlyphRange: lineGlyphs, actualGlyphRange: nil)
+            guard NSIntersectionRange(charRange, characters).length > 0 else { return rect }
+            var textMetrics: (font: NSFont, character: Int)?
+            var includesImage = false
+            storage.enumerateAttributes(in: characters) { attributes, run, stop in
+                // The checklist's attachment is a marker on a text line.
+                guard attributes[.notesMarker] as? Bool != true else { return }
+                if attributes[.attachment] != nil { includesImage = true; stop.pointee = true; return }
+                if let candidate = attributes[.font] as? NSFont, candidate.pointSize > (textMetrics?.font.pointSize ?? 0) {
+                    textMetrics = (candidate, run.location)
+                }
             }
-            guard let font, !includesAttachment else { return rect }
-            let baseline = drawingOrigin.y + line.minY + location(forGlyphAt: index).y
+            guard let (font, character) = textMetrics, !includesImage else { return rect }
+            let textGlyph = glyphIndexForCharacter(at: character)
+            let baseline = drawingOrigin.y + line.minY + location(forGlyphAt: textGlyph).y
             let height = min(rect.height, ceil(font.ascender - font.descender) + 2)
             let center = baseline - (font.ascender + font.descender) / 2
             let y = min(max(center - height / 2, rect.minY), rect.maxY - height)

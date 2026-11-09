@@ -84,7 +84,8 @@ struct NotesContinuousBody: NSViewRepresentable {
         func publish() {
             guard let view, !view.loading, !view.hasMarkedText() else { return }
             do {
-                let blocks = try NotesContinuousDocument.blocks(from:view.attributedString(),scale:view.readingScale,trailingAttributes:view.trailingAttributes)
+                let blocks = try NotesContinuousDocument.blocks(from: view.attributedString(), scale: view.readingScale,
+                    trailingAttributes: view.trailingAttributes, cache: view.bodyEncodingCache)
                 view.pruneVisibleImages(to: Set(blocks.compactMap(\.attachmentID)))
                 if let previous = parent.session.pendingTextFailure, parent.session.failure == previous { parent.session.failure = nil }
                 parent.session.pendingTextFailure = nil

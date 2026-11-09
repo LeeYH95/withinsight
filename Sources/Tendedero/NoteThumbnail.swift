@@ -47,7 +47,9 @@ import NotesCore
                 text.append(NSAttributedString(string: "•\t"))
                 if body.hasPrefix("• ") { body = String(body.dropFirst(2)) }
             }
+            let bodyStart = text.length
             text.append(NSAttributedString(string: body.isEmpty && block.kind == .checklist ? "待办事项" : body))
+            let bodyRange = NSRange(location: bodyStart, length: text.length - bodyStart)
             if index < blocks.count - 1 { text.append(NSAttributedString(string: "\n")) }
             let string = text.string as NSString
             var cursor = 0
@@ -65,6 +67,11 @@ import NotesCore
                     ? (paragraphSpacing ?? (list == nil ? 0 : 12)) : 0
                 text.addAttributes([.font: font, .foregroundColor: color, .paragraphStyle: style], range: range)
                 cursor = NSMaxRange(range)
+            }
+            if block.kind == .checklist && block.isChecked {
+                let completedColor = customColor?.withAlphaComponent(0.8) ?? NSColor(NotesTheme.muted)
+                text.addAttributes([.strikethroughStyle: NSUnderlineStyle.single.rawValue,
+                                    .foregroundColor: completedColor], range: bodyRange)
             }
             result.append(text)
         }

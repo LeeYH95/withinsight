@@ -427,10 +427,13 @@ final class LinkTitlePasteTests: XCTestCase {
     private(set) var lastTrace = ""
     init(view: NotesContinuousTextView) throws {
         self.view = view
-        window = NSWindow(contentRect: NSRect(x: -12_000, y: -12_000, width: 480, height: 300),
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 300),
                           styleMask: [.borderless], backing: .buffered, defer: false)
         super.init()
         window.isReleasedWhenClosed = false
+        // Keep the fixture invisible without introducing an offscreen offset
+        // when AppKit translates a posted event between coordinate spaces.
+        window.alphaValue = 0
         window.contentView = view
         view.delegate = self
         window.orderFront(nil)
