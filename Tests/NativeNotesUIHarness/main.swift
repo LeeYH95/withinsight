@@ -245,6 +245,14 @@ import NotesCore
               "toolbar divider does not inherit the hand cursor")
         check(moveContextCursor(to: NSPoint(x: 10, y: 12)) == .iBeam,
               "leaving the toolbar for the text restores the text cursor")
+        let clippedButton = NotesButtonCursorRegion(frame: NSRect(
+            x: contextContent.bounds.maxX + 10, y: 10, width: 32, height: 24))
+        contextContent.addSubview(clippedButton)
+        check(clippedButton.visibleRect.intersection(clippedButton.bounds).isNull,
+              "cursor regression fixture places a button outside its visible region")
+        clippedButton.resetCursorRects()
+        clippedButton.removeFromSuperview()
+        check(true, "refreshing a fully clipped button's cursor does not throw")
         func pressContextPoint(_ location: NSPoint) {
             let point = contextView.convert(location, to: nil)
             for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
