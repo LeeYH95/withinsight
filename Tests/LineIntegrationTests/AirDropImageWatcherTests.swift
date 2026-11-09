@@ -49,6 +49,7 @@ final class AirDropImageWatcherTests: XCTestCase {
         let line = Line(restoring: false, gusts: false, defaults: defaults)
         var delivered: [String] = []
         let hung = expectation(description: "fresh AirDrop image hangs")
+        let late = expectation(description: "AirDrop metadata arriving after the first scan is picked up")
         let next = expectation(description: "the next arrival is seen by the active watcher")
         let stopped = expectation(description: "an arrival after stopping is ignored")
         stopped.isInverted = true
@@ -56,6 +57,7 @@ final class AirDropImageWatcherTests: XCTestCase {
             delivered.append(url.lastPathComponent)
             guard line.hang(url, quietly: true) != nil else { return }
             if url.lastPathComponent == "received-now.png" { hung.fulfill() }
+            if url.lastPathComponent == "metadata-late.png" { late.fulfill() }
             if url.lastPathComponent == "second-airdrop.png" { next.fulfill() }
             if url.lastPathComponent == "after-stop.png" { stopped.fulfill() }
         }, onChange: {})
@@ -66,21 +68,31 @@ final class AirDropImageWatcherTests: XCTestCase {
         try deliver(stagedFile("chrome.png", type: kLSQuarantineTypeWebDownload as String, received: Date()))
         try deliver(stagedFile("local.png", type: nil, received: Date()))
         try deliver(stagedFile("non-image.txt", type: airDropType, received: Date()))
+        try deliver(stagedFile("metadata-late.png", type: nil, received: Date()))
         try deliver(stagedFile("received-now.png", type: airDropType, received: Date()))
         await fulfillment(of: [hung], timeout: 4)
 
         XCTAssertEqual(delivered, ["received-now.png"])
+        // The tagged file acts as a barrier for the first scan of both arrivals.
+        var lateImage = downloads.appendingPathComponent("metadata-late.png")
+        var metadata = URLResourceValues()
+        metadata.quarantineProperties = [kLSQuarantineTypeKey as String: airDropType,
+                                         kLSQuarantineTimeStampKey as String: Date()]
+        try lateImage.setResourceValues(metadata)
+        await fulfillment(of: [late], timeout: 4)
+        XCTAssertEqual(delivered, ["received-now.png", "metadata-late.png"])
+
         try deliver(stagedFile("browser-again.png", type: kLSQuarantineTypeWebDownload as String, received: Date()))
         try deliver(stagedFile("second-airdrop.png", type: airDropType, received: Date()))
         await fulfillment(of: [next], timeout: 4)
 
-        XCTAssertEqual(delivered, ["received-now.png", "second-airdrop.png"])
+        XCTAssertEqual(delivered, ["received-now.png", "metadata-late.png", "second-airdrop.png"])
         XCTAssertEqual(line.items.map { $0.url.lastPathComponent }, delivered)
         XCTAssertEqual(try Data(contentsOf: downloads.appendingPathComponent("received-now.png")), pixels)
 
         watcher.stop()
         try deliver(stagedFile("after-stop.png", type: airDropType, received: Date()))
         await fulfillment(of: [stopped], timeout: 0.6)
-        XCTAssertEqual(delivered, ["received-now.png", "second-airdrop.png"])
+        XCTAssertEqual(delivered, ["received-now.png", "metadata-late.png", "second-airdrop.png"])
     }
 }
