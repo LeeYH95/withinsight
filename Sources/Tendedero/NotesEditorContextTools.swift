@@ -445,11 +445,14 @@ struct NotesButtonCursor: NSViewRepresentable {
     func updateNSView(_ view: NSView, context: Context) {}
 }
 
-private final class NotesButtonCursorRegion: NSView {
+final class NotesButtonCursorRegion: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
     override func resetCursorRects() {
         super.resetCursorRects()
-        addCursorRect(visibleRect.intersection(bounds), cursor: .pointingHand)
+        let region = visibleRect.intersection(bounds)
+        // A fully clipped view has a null intersection with an infinite origin.
+        guard !region.isEmpty else { return }
+        addCursorRect(region, cursor: .pointingHand)
     }
 }

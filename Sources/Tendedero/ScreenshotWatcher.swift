@@ -1,10 +1,14 @@
 import Foundation
+import CoreServices
 
 /// Watches the folder macOS saves screenshots to and reports new ones.
 /// Tendedero never takes screenshots itself: you keep your usual shortcut
 /// (or CleanShot, or anything else) and the line just picks them up.
 final class ScreenshotWatcher {
+    enum ImageSource { case screenshots, folder, airDrop }
+
     let folder: URL
+    private let imageSource: ImageSource
     /// On the Desktop we only accept real screenshots, tagged by macOS with an
     /// extended attribute. In a dedicated folder, any image counts.
     private let onlyTaggedScreenshots: Bool
@@ -29,16 +33,18 @@ final class ScreenshotWatcher {
 
     static let desktop = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Desktop")
 
-    /// Watches the folder macOS saves screenshots to, or a given folder.
-    /// `anyImage` takes every new image even on the Desktop, for a folder
-    /// the user chose to watch.
-    init(folder: URL? = nil, anyImage: Bool = false, onNew: @escaping (URL) -> Void, onChange: @escaping () -> Void) {
+    /// Watches the system capture folder, a user-selected image folder, or
+    /// the new AirDrop images in Downloads.
+    init(folder: URL? = nil, imageSource: ImageSource = .screenshots,
+         onNew: @escaping (URL) -> Void, onChange: @escaping () -> Void) {
         self.onNew = onNew
         self.onChange = onChange
+        self.imageSource = imageSource
         self.folder = folder ?? Self.screenshotFolder()
-        onlyTaggedScreenshots = !anyImage
+        onlyTaggedScreenshots = imageSource == .screenshots
             && self.folder.standardizedFileURL.path == Self.desktop.standardizedFileURL.path
-        acceptsRecordings = self.folder.standardizedFileURL.path == Inbox.folder.standardizedFileURL.path
+        acceptsRecordings = imageSource != .airDrop
+            && self.folder.standardizedFileURL.path == Inbox.folder.standardizedFileURL.path
     }
 
     static func screenshotFolder() -> URL {
@@ -129,27 +135,24 @@ final class ScreenshotWatcher {
             return
         }
         listing = true
+        let previous = known
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
             let files = self.listFolder()
-            let settled = files.filter { self.creationDate($0) < self.launchDate }
-            let candidates = files.filter { self.isCandidate($0) }
-            DispatchQueue.main.async { self.adopt(files, settled, candidates) }
+            let base = previous ?? (self.imageSource == .airDrop ? [] :
+                Set(files.filter { self.creationDate($0) < self.launchDate }.map(\.path)))
+            let candidates = files.filter { !base.contains($0.path) && self.isCandidate($0) }
+            DispatchQueue.main.async { self.adopt(files, candidates) }
         }
     }
 
     /// Takes a finished listing, reports what is new, then runs the listing
     /// that was asked for while this one was in flight.
-    private func adopt(_ files: [URL], _ settled: [URL], _ candidates: [URL]) {
+    private func adopt(_ files: [URL], _ candidates: [URL]) {
         listing = false
         guard !stopped else { return }
-        // The first listing adopts everything that was already there when the
-        // app launched. Later ones compare against the previous listing.
         let first = known == nil
-        let base = known ?? Set(settled.map(\.path))
-        for url in candidates where !base.contains(url.path) {
-            onNew(url)
-        }
+        for url in candidates { onNew(url) }
         known = Set(files.map(\.path))
         if !first { onChange() }
         if missed {
@@ -171,6 +174,16 @@ final class ScreenshotWatcher {
     private func isCandidate(_ url: URL) -> Bool {
         if isRecording(url) { return acceptsRecordings }
         guard Self.imageExtensions.contains(url.pathExtension.lowercased()) else { return false }
+        if imageSource == .airDrop {
+            guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .quarantinePropertiesKey]),
+                  values.isRegularFile == true, values.isSymbolicLink != true,
+                  let metadata = values.quarantineProperties,
+                  metadata[kLSQuarantineTypeKey as String] as? String == "LSQuarantineTypeAirDrop",
+                  let receivedAt = metadata[kLSQuarantineTimeStampKey as String] as? Date else { return false }
+            // AirDrop preserves the original photo's creation date. Quarantine
+            // records when it was received, with second-level precision.
+            return receivedAt.timeIntervalSince1970 >= floor(launchDate.timeIntervalSince1970)
+        }
         return onlyTaggedScreenshots ? isScreenCapture(url) : true
     }
 
