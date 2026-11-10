@@ -35,6 +35,6 @@ swiftc -parse-as-library -module-cache-path "$notes_module_cache" -module-name L
     Sources/Tendedero/NotesWebLink.swift Sources/Tendedero/NotesLinkTitleResolver.swift Sources/Tendedero/NotesLinkMetadata.swift Sources/Tendedero/NotesLinkPasteController.swift \
     Sources/Tendedero/NotesEditorSession.swift Sources/Tendedero/NotesEditorPasteboard.swift Sources/Tendedero/RichNoteTextView.swift Sources/Tendedero/NotesListEditing.swift Sources/Tendedero/NotesContinuousDocument.swift Sources/Tendedero/NotesContinuousTextView.swift Sources/Tendedero/NotesContinuousBody.swift Sources/Tendedero/NotesEditorContextTools.swift Sources/Tendedero/NotesEditorFormatMenu.swift Sources/Tendedero/NotesImagePreview.swift \
     Sources/Tendedero/NotesWorkspace.swift Sources/Tendedero/NotesEmptyTrashConfirmation.swift Sources/Tendedero/NotesEditorResize.swift Sources/Tendedero/NotesEditorIcon.swift Sources/Tendedero/NoteEditorView.swift \
-    Sources/Tendedero/NotesLibraryView.swift Sources/Tendedero/NotesSettingsView.swift \
+    Sources/Tendedero/NotesLibraryView.swift Sources/Tendedero/NotesSettingsView.swift Sources/Tendedero/RopeFoldingPreferences.swift \
     Tests/NativeNotesUIHarness/DurabilityProbe.swift Tests/NativeNotesUIHarness/LinkMetadataProbe.swift Tests/NativeNotesUIHarness/main.swift -o "$notes_harness/check"
 "$notes_harness/check" "$@"

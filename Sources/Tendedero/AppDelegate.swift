@@ -463,14 +463,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         for item in batch.targets where item.flying { line.land(item.id) }
         let width = panel.frame.width
         let contentWidth = max(300, width - Layout.controlsWidth)
-        let targets = batch.targets.compactMap { item -> ScreenshotSweepPlan.Target? in
-            let x = line.hangingX(for: item.id, width: width)
+        let targets = batch.targetSlots.compactMap { id -> ScreenshotSweepPlan.Target? in
+            let x = line.hangingX(for: id, width: width, presentation: batch.presentation)
             guard x > 12, x < contentWidth - 12 else { return nil }
-            return .init(id: item.id, x: x)
+            return .init(id: id, x: x)
         }
         awaySince = nil
         line.screenshotSweep.start(.init(width: width, targets: targets), reduced: HangingMotion.reduced,
-            onContact: { [weak self] id in self?.line.releaseScreenshot(id, in: batch.id) },
+            onContact: { [weak self] id in self?.line.releaseScreenshotSlot(id, in: batch.id) },
             onFinish: { [weak self] in
                 guard let self else { return }
                 self.line.finishScreenshotClear(batch.id)
@@ -481,9 +481,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Where a card will hang, in screen coordinates, using the same layout
     /// as the line view.
     private func cardFrame(for id: UUID) -> CGRect? {
-        guard let index = line.items.firstIndex(where: { $0.id == id }) else { return nil }
+        let presentation = line.ropePresentation
+        guard !presentation.hides(id), let index = line.items.firstIndex(where: { $0.id == id }) else { return nil }
         let width = panel.frame.width
-        let x = line.hangingX(for: id, width: width)
+        let x = line.hangingX(for: id, width: width, presentation: presentation)
         let viewTop = Layout.ropeY(x: x, width: width) - Layout.pinAbove
         let cardTop = viewTop + PeggedView.cardOffsetBelowTop
         let size = PeggedView.cardSize(for: line.items[index].thumb.size)
@@ -1025,6 +1026,7 @@ private extension AppDelegate {
                         screenshotFolder: self?.watcher?.folder ?? ScreenshotWatcher.screenshotFolder(),
                         extraFolders: Self.extraFolders,
                         capacity: Line.keepOnLine,
+                        foldingRules: self?.line.foldingRules ?? [:],
                         shortcut: (Shortcut.current?.display ?? "未设置") + (LaunchOptions.demo ? " · 验收模式未注册" : ""))
                 },
                 watchScreenshots: { [weak self] enabled in self?.setScreenshotWatching(enabled) },
@@ -1038,6 +1040,7 @@ private extension AppDelegate {
                     self?.startWatcher()
                 },
                 setCapacity: { [weak self] value in self?.setKeep(value) },
+                setFolding: { [weak self] kind, rule in self?.line.setFolding(rule, for: kind) },
                 changeShortcut: { [weak self] in guard !LaunchOptions.demo else { return }; self?.changeShortcut() })
             workspace.onFocus = { [weak self] id in self?.line.selectedNoteID = id }
             workspace.editorTransitionAnchor = { [weak self] noteID in
@@ -1057,7 +1060,7 @@ private extension AppDelegate {
                 self?.workspace.newNote(template: NoteTemplate(rawValue: template) ?? .text)
             }
             line.onShowNotes = { [weak self] in self?.workspace.showLibrary() }
-            line.onOpenNote = { [weak self] in self?.workspace.open($0) }
+            line.onOpenNote = { [weak self] in self?.workspace.open($0, fromLine: true) }
             line.onCopyNote = { [weak self] in self?.workspace.copy($0) }
             line.onDuplicateNote = { [weak self] in self?.workspace.duplicate($0) }
             line.onExportNote = { [weak self] in self?.workspace.export($0) }

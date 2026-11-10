@@ -32,9 +32,12 @@ final class NotesWorkspace {
     private var allWindows: [NSWindow] { editors.values.compactMap(\.window) + [library?.window, settings?.window].compactMap { $0 } }
     var hasVisibleEditor: Bool { editors.values.contains { $0.window?.isVisible == true } }
     var hasKeyEditor: Bool { editors.values.contains { $0.window?.isKeyWindow == true } }
-    func open(_ id: UUID) {
+    func open(_ id: UUID, fromLine: Bool = false) {
         NotesTooltipPresenter.shared.dismiss()
         guard let document = store.document(id: id), document.deletedAt == nil else { return }
+        if fromLine, let libraryWindow = library?.window, libraryWindow.isVisible, libraryWindow.attachedSheet == nil {
+            NotesWindowMotion.hide(libraryWindow)
+        }
         let controller: NotesEditorController
         if let existing = editors[id] { controller = existing; if !existing.session.dirty { existing.session.reload() } }
         else { controller = NotesEditorController(note: document, workspace: self); editors[id] = controller }

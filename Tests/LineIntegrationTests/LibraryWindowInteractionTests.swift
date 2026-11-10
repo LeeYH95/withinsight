@@ -31,6 +31,40 @@ final class LibraryWindowInteractionTests: XCTestCase {
         return false
     }
 
+    @MainActor func testClosingEditorFromRopeDoesNotRevealExistingLibrary() throws {
+        let (workspace, library) = try fixture()
+        defer { library.orderOut(nil) }
+        var note = try workspace.store.create()
+        note.title = "挂绳窗口验收 " + UUID().uuidString
+        note.onLine = true
+        note.draft = false
+        try workspace.store.update(note)
+        let suite = "Shipian-rope-origin-test-" + note.id.uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let line = Line(restoring: false, gusts: false, defaults: defaults)
+        let card = try XCTUnwrap(line.hangNote(note.id, thumbnail: workspace.thumbnail(for: note), quietly: true))
+        line.onOpenNote = { workspace.open($0, fromLine: true) }
+
+        line.open(card)
+        let editor = try XCTUnwrap(NSApp.windows.first { $0.title == note.title && $0.isVisible })
+        defer { NotesEditorTransition.finish(editor); editor.orderOut(nil) }
+        editor.performClose(nil)
+        NotesEditorTransition.finish(editor)
+        let deadline = Date().addingTimeInterval(1)
+        while (editor.isVisible || library.isVisible) && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+        }
+        XCTAssertFalse(editor.isVisible)
+        XCTAssertFalse(library.isVisible, "A rope-origin editor must not leave the library behind it")
+
+        workspace.showLibrary()
+        workspace.open(note.id)
+        editor.performClose(nil)
+        NotesEditorTransition.finish(editor)
+        XCTAssertTrue(library.isVisible, "Opening from the library should return to the library")
+    }
+
     @MainActor func testDefaultLibraryUsesCompactSize() throws {
         let (workspace, window) = try fixture()
         defer { window.orderOut(nil); _ = workspace }

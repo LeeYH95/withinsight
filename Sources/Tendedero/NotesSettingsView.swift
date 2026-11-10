@@ -15,6 +15,7 @@ struct NotesSettingsSnapshot: Equatable {
     var screenshotFolder = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Desktop")
     var extraFolders: [URL] = []
     var capacity: Int?
+    var foldingRules: [RopeGroupKind: RopeFoldRule] = [:]
     var shortcut = "未设置"
 }
 
@@ -28,6 +29,7 @@ struct NotesSettingsSnapshot: Equatable {
     var chooseFolder: () -> Void = {}
     var removeFolder: (URL) -> Void = { _ in }
     var setCapacity: (Int?) -> Void = { _ in }
+    var setFolding: (RopeGroupKind, RopeFoldRule) -> Void = { _, _ in }
     var changeShortcut: () -> Void = {}
 }
 
@@ -136,6 +138,27 @@ struct NotesSettingsView: View {
             toggle("登录时启动", detail: system.loginNeedsApproval ? "请在系统设置的登录项中允许拾片。" : nil,
                    value: Binding(get: { system.loginEnabled || system.loginNeedsApproval }, set: { _ in actions.toggleLogin(); refresh() }))
                 .disabled(!actions.systemAvailable)
+            Text("自动折叠")
+                .font(.system(size: 14, weight: .semibold))
+                .padding(.top, 20)
+            ForEach(RopeGroupKind.allCases, id: \.self) { kind in
+                let rule = system.foldingRules[kind] ?? RopeFoldRule()
+                let title = "自动折叠" + kind.label
+                row(title) {
+                    HStack(spacing: 14) {
+                        RopeThresholdField(kind: kind, rule: rule) { threshold in
+                            updateFolding(kind) { $0.threshold = threshold }
+                        }
+                        Toggle(title, isOn: Binding(
+                            get: { rule.enabled },
+                            set: { enabled in updateFolding(kind) { $0.enabled = enabled } }
+                        ))
+                        .labelsHidden().toggleStyle(.switch).controlSize(.small).tint(NotesTheme.accent)
+                        .accessibilityLabel(title)
+                        .accessibilityIdentifier("rope.folding." + kind.rawValue)
+                    }
+                }
+            }
             if !actions.systemAvailable { systemNote }
         case .appearance:
             appearanceControl.padding(.bottom, 8)
@@ -180,6 +203,13 @@ struct NotesSettingsView: View {
             }
             if !actions.systemAvailable { systemNote }
         }
+    }
+
+    private func updateFolding(_ kind: RopeGroupKind, change: (inout RopeFoldRule) -> Void) {
+        var rule = actions.read().foldingRules[kind] ?? RopeFoldRule()
+        change(&rule)
+        actions.setFolding(kind, rule)
+        refresh()
     }
 
     private var divider: some View { Rectangle().fill(NotesTheme.border).frame(height: 1) }
@@ -253,5 +283,48 @@ struct NotesSettingsView: View {
             menu.addItem(item)
         }
         return menu
+    }
+}
+
+
+private struct RopeThresholdField: View {
+    let kind: RopeGroupKind
+    let rule: RopeFoldRule
+    let onCommit: (Int) -> Void
+    @FocusState private var editing: Bool
+    @State private var draft = ""
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text("超过")
+            TextField(kind.label + "折叠阈值", text: $draft)
+                .labelsHidden()
+                .textFieldStyle(.roundedBorder)
+                .multilineTextAlignment(.center)
+                .monospacedDigit()
+                .frame(width: 54)
+                .focused($editing)
+                .accessibilityIdentifier("rope.threshold." + kind.rawValue)
+                .onSubmit { commit(); editing = false }
+                .onChange(of: editing) { wasEditing, isEditing in
+                    if wasEditing && !isEditing { commit() }
+                }
+            Text(kind.unit + "时折叠")
+        }
+        .font(.system(size: 12))
+        .foregroundStyle(NotesTheme.muted)
+        .disabled(!rule.enabled)
+        .opacity(rule.enabled ? 1 : 0.56)
+        .onChange(of: rule.threshold, initial: true) { _, value in draft = String(value) }
+    }
+
+    private func commit() {
+        let value = Int(draft.trimmingCharacters(in: .whitespacesAndNewlines))
+        guard let value, value > 0, rule.enabled else {
+            draft = String(rule.threshold)
+            return
+        }
+        draft = String(value)
+        if value != rule.threshold { onCommit(value) }
     }
 }
