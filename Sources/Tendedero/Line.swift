@@ -38,21 +38,35 @@ struct ScreenshotClearBatch {
     let orderKeys: [String]
     let scroll: CGFloat
     let visibleCount: Int
+    let presentation: RopePresentation
     var targetIDs: Set<UUID> { Set(targets.map(\.id)) }
+
+    var targetSlots: [UUID] {
+        var seen: Set<UUID> = []
+        return targets.map { presentation.slot(for: $0.id) }.filter { seen.insert($0).inserted }
+    }
 }
 
 /// The line itself: what hangs on it and what you can do with each item.
 /// The files never move. The line is only a view onto them.
 @MainActor
 final class Line: ObservableObject {
-    @Published private(set) var items: [Pegged] = []
+    @Published private(set) var items: [Pegged] = [] {
+        didSet { clearInvalidExpandedGroup() }
+    }
+    @Published private(set) var foldingRules: [RopeGroupKind: RopeFoldRule] = [:]
+    @Published private(set) var expandedRopeGroup: RopeGroupKind?
     @Published private(set) var gust = 0
     @Published var copiedID: UUID?
     @Published var draggingID: UUID?
     @Published var pressedID: UUID?
     @Published var selectedNoteID: UUID?
     /// Whether the line has slid down into view.
-    @Published var revealed = false
+    @Published var revealed = false {
+        didSet {
+            if revealed && !oldValue { expandedRopeGroup = nil }
+        }
+    }
     @Published private(set) var screenshotClear: ScreenshotClearBatch?
     @Published private(set) var screenshotClearUndoCount = 0
     let screenshotSweep = ScreenshotSweepMotion()
@@ -129,6 +143,9 @@ final class Line: ObservableObject {
          inboxFolder: URL? = nil) {
         self.defaults = defaults
         self.inboxFolder = inboxFolder
+        foldingRules = Dictionary(uniqueKeysWithValues: RopeGroupKind.allCases.map {
+            ($0, RopeFoldRule(kind: $0, defaults: defaults))
+        })
         initialOrder = defaults.stringArray(forKey: "mixedLineOrder") ?? []
         if restoring { restore() }
         if gusts { scheduleGust() }
@@ -178,24 +195,63 @@ final class Line: ObservableObject {
         return pendingPhotoPaths.filter { !loaded.contains($0) && !Tendedero.isRecording(URL(fileURLWithPath: $0)) }
     }
 
+    var ropePresentation: RopePresentation {
+        screenshotClear?.presentation ?? RopePresentation(items: items, rules: foldingRules, expanded: expandedRopeGroup)
+    }
+
+    func setFolding(_ rule: RopeFoldRule, for kind: RopeGroupKind) {
+        guard foldingRules[kind] != rule else { return }
+        foldingRules[kind] = rule
+        rule.save(kind: kind, defaults: defaults)
+        clearInvalidExpandedGroup()
+        if screenshotClear == nil { scroll = min(scroll, ropePresentation.scrollLimit(visible: visibleCount)) }
+    }
+
+    private func clearInvalidExpandedGroup() {
+        guard let kind = expandedRopeGroup else { return }
+        let count = items.lazy.filter { !$0.falling && $0.ropeGroupKind == kind }.count
+        if foldingRules[kind]?.groups(count) != true { expandedRopeGroup = nil }
+    }
+
+    func toggleRopeGroup(_ kind: RopeGroupKind) {
+        guard screenshotClear == nil, ropePresentation.groups.contains(where: { $0.kind == kind }) else { return }
+        expandedRopeGroup = expandedRopeGroup == kind ? nil : kind
+        let presentation = ropePresentation
+        if let index = presentation.index(for: kind.id) {
+            // Keep the group's control and its first cards in view as it opens to the right.
+            scroll = CGFloat(max(0, presentation.slotIDs.count - visibleCount - index)) * Layout.spacing
+        }
+    }
+
     func acceptsPointer(at point: CGPoint) -> Bool {
         if hitRects.values.contains(where: { $0.insetBy(dx: -4, dy: -4).contains(point) }) { return true }
-        guard items.count > visibleCount else { return false }
-        // Only cards define the scrolling strip. Controls and the undo banner
-        // remain individually clickable without blocking the desktop beside them.
-        let band = items.filter { !$0.falling }.compactMap { hitRects[$0.id] }.reduce(CGRect.null) { $0.union($1) }
+        let presentation = ropePresentation
+        guard presentation.slotIDs.count > visibleCount else { return false }
+        // Only rope cards define the scrolling strip. The controls and undo
+        // banner catch their own clicks without blocking the desktop beside them.
+        let band = presentation.slotIDs.compactMap { hitRects[$0] }.reduce(CGRect.null) { $0.union($1) }
         return !band.isNull && point.y >= band.minY - 4 && point.y <= band.maxY + 4
     }
 
-    /// Both the view and screen-space falling renderer use the same frozen slots.
-    func hangingX(for id: UUID, width: CGFloat) -> CGFloat {
-        let original = screenshotClear?.items ?? items
-        let newcomers = items.filter { candidate in !original.contains { $0.id == candidate.id } }
-        guard let index = original.firstIndex(where: { $0.id == id })
-            ?? newcomers.firstIndex(where: { $0.id == id }).map({ original.count + $0 }) else { return width / 2 }
-        return Layout.x(index: index, count: original.count, width: max(300, width - Layout.controlsWidth),
-                        visible: screenshotClear?.visibleCount ?? visibleCount,
-                        scroll: screenshotClear?.scroll ?? scroll)
+    /// The view, capture flight and clear animation share the same slots.
+    func hangingX(for id: UUID, width: CGFloat, presentation: RopePresentation? = nil) -> CGFloat {
+        let presentation = presentation ?? ropePresentation
+        let count = presentation.slotIDs.count
+        let visible = screenshotClear?.visibleCount ?? visibleCount
+        let offset = min(screenshotClear?.scroll ?? scroll, presentation.scrollLimit(visible: visible))
+        let index: Int
+        if let slot = presentation.index(for: id) {
+            index = slot
+        } else if let batch = screenshotClear {
+            let original = Set(batch.items.map(\.id))
+            let newcomers = items.filter { !original.contains($0.id) && !$0.falling }
+            guard let newcomer = newcomers.firstIndex(where: { $0.id == id }) else { return width / 2 }
+            index = count + newcomer
+        } else {
+            return width / 2
+        }
+        return Layout.x(index: index, count: count, width: max(300, width - Layout.controlsWidth),
+                        visible: visible, scroll: offset)
     }
 
     func move(_ id: UUID, before destination: UUID) {
@@ -209,9 +265,11 @@ final class Line: ObservableObject {
     private func move(_ id: UUID, relativeTo destination: UUID, after: Bool) {
         guard screenshotClear == nil, id != destination, let from = items.firstIndex(where: { $0.id == id }),
               items.contains(where: { $0.id == destination }) else { return }
-        let item = items.remove(at: from)
-        let target = items.firstIndex(where: { $0.id == destination })!
-        items.insert(item, at: target + (after ? 1 : 0))
+        var reordered = items
+        let item = reordered.remove(at: from)
+        let target = reordered.firstIndex(where: { $0.id == destination })!
+        reordered.insert(item, at: target + (after ? 1 : 0))
+        items = reordered
         save()
     }
 
@@ -294,7 +352,7 @@ final class Line: ObservableObject {
         resetCopiedImagesUndo()
         let batch = ScreenshotClearBatch(items: items, targets: targets, pendingPaths: pending,
                                         orderKeys: defaults.stringArray(forKey: "mixedLineOrder") ?? items.map(orderKey),
-                                        scroll: scroll, visibleCount: visibleCount)
+                                        scroll: scroll, visibleCount: visibleCount, presentation: ropePresentation)
         resetScreenshotClearUndo()
         clearedScreenshots = []
         screenshotClear = batch
@@ -308,6 +366,13 @@ final class Line: ObservableObject {
         guard let batch = beginScreenshotClear() else { return }
         if let onClearScreenshots { onClearScreenshots(batch) }
         else { finishScreenshotClear(batch.id) }
+    }
+
+    func releaseScreenshotSlot(_ slot: UUID, in batchID: UUID) {
+        guard let batch = screenshotClear, batch.id == batchID else { return }
+        for target in batch.targets where batch.presentation.slot(for: target.id) == slot {
+            releaseScreenshot(target.id, in: batchID)
+        }
     }
 
     func releaseScreenshot(_ id: UUID, in batchID: UUID, animated: Bool = true) {
@@ -331,7 +396,7 @@ final class Line: ObservableObject {
         }
         clearedScreenshots = []
         screenshotClear = nil
-        scroll = min(scroll, CGFloat(max(0, items.count - visibleCount)) * Layout.spacing)
+        scroll = min(scroll, ropePresentation.scrollLimit(visible: visibleCount))
         save()
     }
 
@@ -359,7 +424,7 @@ final class Line: ObservableObject {
             restored += 1
         }
         resetScreenshotClearUndo()
-        scroll = min(undo.scroll, CGFloat(max(0, items.count - visibleCount)) * Layout.spacing)
+        scroll = min(undo.scroll, ropePresentation.scrollLimit(visible: visibleCount))
         save(restoringOrder: undo.orderKeys)
         return restored
     }
@@ -475,7 +540,7 @@ final class Line: ObservableObject {
     /// Moves along a line that holds more than fit, from a scroll gesture.
     func scroll(by delta: CGFloat) {
         guard screenshotClear == nil else { return }
-        let most = CGFloat(max(0, items.count - visibleCount)) * Layout.spacing
+        let most = ropePresentation.scrollLimit(visible: visibleCount)
         let next = min(most, max(0, scroll + delta))
         if next != scroll { scroll = next }
     }

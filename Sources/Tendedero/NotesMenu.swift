@@ -61,6 +61,10 @@ enum NotesMenuAlignment { case leading, trailing }
 }
 
 enum NotesMenuGeometry {
+    static let rowHeight: CGFloat = 36
+    static let rowSpacing: CGFloat = 4
+    static let separatorPadding: CGFloat = 4
+
     static func containsVisiblePoint(_ point: NSPoint, in view: NSView) -> Bool {
         !view.isHiddenOrHasHiddenAncestor && view.visibleRect.contains(point)
     }
@@ -190,9 +194,12 @@ private final class NotesPopupPanel: NSPanel {
         }
         let longest = navigator.items.map { (($0.title + ($0.notesDetail.isEmpty ? "" : "  " + $0.notesDetail)) as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 13)]).width }.max() ?? 150
         let width = min(390, max(248, longest + 90))
-        let rows = navigator.items.reduce(CGFloat(0)) { $0 + ($1.isSeparatorItem ? 13 : 36) }
+        let items = navigator.items
+        let separatorHeight = 1 + 2 * NotesMenuGeometry.separatorPadding
+        let rows = items.reduce(CGFloat(0)) { $0 + ($1.isSeparatorItem ? separatorHeight : NotesMenuGeometry.rowHeight) }
+        let gaps = CGFloat(max(0, items.count - 1)) * NotesMenuGeometry.rowSpacing
         let header: CGFloat = navigator.depth > 0 || !navigator.title.isEmpty ? 39 : 0
-        let size = NSSize(width: width, height: min(rows + header + 14, min(650, visible.height - 24)))
+        let size = NSSize(width: width, height: min(rows + gaps + header + 14, min(650, visible.height - 24)))
         let frame: NSRect
         if let avoidedSelection {
             frame = NotesMenuGeometry.contextFrame(anchor: anchorRect, selection: avoidedSelection, size: size, visible: visible)
@@ -353,10 +360,11 @@ private struct NotesMenuSurface: View {
             }
             ScrollViewReader { scroll in
                 ScrollView {
-                    VStack(spacing: 0) {
+                    VStack(spacing: NotesMenuGeometry.rowSpacing) {
                         ForEach(Array(navigator.items.enumerated()), id: \.offset) { index, item in
                             if item.isSeparatorItem {
-                                Rectangle().fill(NotesTheme.border.opacity(0.7)).frame(height: 1).padding(.horizontal, 8).padding(.vertical, 6)
+                                Rectangle().fill(NotesTheme.border.opacity(0.7)).frame(height: 1).padding(.horizontal, 8)
+                                    .padding(.vertical, NotesMenuGeometry.separatorPadding)
                             } else { row(item, at: index).id(index) }
                         }
                     }
@@ -392,7 +400,7 @@ private struct NotesMenuSurface: View {
                 else if !item.keyEquivalent.isEmpty { Text(shortcut(item)).font(.system(size: 11)).foregroundStyle(NotesTheme.muted) }
             }.font(.system(size: 13, weight: selected ? .medium : .regular))
                 .foregroundStyle(item.notesDestructive ? NotesTheme.danger : (selected || checked ? NotesTheme.accent : NotesTheme.text))
-                .padding(.horizontal, 10).frame(height: 36).frame(maxWidth: .infinity)
+                .padding(.horizontal, 10).frame(height: NotesMenuGeometry.rowHeight).frame(maxWidth: .infinity)
                 .background(NotesTheme.accent.opacity(selected ? 0.11 : (checked ? 0.06 : 0)), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
                 .contentShape(RoundedRectangle(cornerRadius: 9))
                 .opacity(item.isEnabled ? 1 : 0.42)

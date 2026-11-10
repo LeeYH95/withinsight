@@ -61,6 +61,9 @@ struct LineView: View {
         GeometryReader { geo in
             let width = geo.size.width
             let contentWidth = max(300, width - Layout.controlsWidth)
+            let presentation = line.ropePresentation
+            let expandedGroup = presentation.groups.first(where: \.expanded)
+            let liveIDs = Set(line.items.lazy.filter { !$0.falling }.map(\.id))
             ZStack(alignment: .topLeading) {
                 Rope(width: width)
 
@@ -72,16 +75,34 @@ struct LineView: View {
 
                 ZStack(alignment: .topLeading) {
                     ForEach(line.items) { item in
-                        let x = line.hangingX(for: item.id, width: width)
+                        let shown = !presentation.hides(item.id) && !item.falling
+                        let x = line.hangingX(for: item.id, width: width, presentation: presentation)
                         let ropeY = Layout.ropeY(x: x, width: width)
-                        PeggedView(item: item, line: line)
+                        let group = expandedGroup?.cover.id == item.id ? expandedGroup : nil
+                        PeggedView(item: item, line: line, participates: shown, expandedGroup: shown ? group : nil)
                             .frame(width: Layout.cardWidth, height: Layout.panelHeight - ropeY, alignment: .top)
-                            .opacity(min(1, max(0, min(x, contentWidth - x) / 90)))
+                            .opacity(shown ? edgeOpacity(x: x, width: contentWidth) : 0)
+                            .allowsHitTesting(shown)
+                            .accessibilityHidden(!shown)
                             .position(x: x, y: ropeY - Layout.pinAbove + (Layout.panelHeight - ropeY) / 2)
+                    }
+
+                    ForEach(presentation.groups.filter { group in
+                        !group.expanded && group.members.contains { liveIDs.contains($0.id) }
+                    }, id: \.id) { group in
+                        let x = line.hangingX(for: group.id, width: width, presentation: presentation)
+                        let ropeY = Layout.ropeY(x: x, width: width)
+                        RopeGroupCard(group: group, revealed: line.revealed) { line.toggleRopeGroup(group.kind) }
+                            .frame(width: Layout.cardWidth, height: Layout.panelHeight - ropeY, alignment: .top)
+                            .opacity(edgeOpacity(x: x, width: contentWidth))
+                            .position(x: x, y: ropeY - Layout.pinAbove + (Layout.panelHeight - ropeY) / 2)
+                            .zIndex(1)
                     }
                 }
                 .frame(width: contentWidth, height: geo.size.height, alignment: .topLeading)
                 .clipped()
+                .animation(groupMotion, value: line.expandedRopeGroup)
+                .animation(groupMotion, value: presentation.groups.map(\.id))
                 ScreenshotSweepOverlay(motion: line.screenshotSweep)
                 ScreenshotClearControl(line: line)
                     .position(x: width - 128, y: Layout.ropeY(x: width - 128, width: width) - LineControl.pinAbove + LineControl.hangingHeight / 2)
@@ -110,13 +131,21 @@ struct LineView: View {
                                      : .easeIn(duration: 0.22)), value: line.revealed)
             .onPreferenceChange(HitRectsKey.self) { rects in
                 let viewport = CGRect(x: 0, y: 0, width: contentWidth, height: geo.size.height)
-                let cardIDs = Set(line.items.map(\.id))
+                let cardIDs = Set(line.items.map(\.id) + RopeGroupKind.allCases.map(\.id))
                 line.hitRects = rects.reduce(into: [:]) { result, pair in
                     let rect = cardIDs.contains(pair.key) ? pair.value.intersection(viewport) : pair.value
                     if !rect.isNull && !rect.isEmpty { result[pair.key] = rect }
                 }
             }
         }
+    }
+
+    private var groupMotion: Animation? {
+        HangingMotion.reduced ? nil : .timingCurve(0.31, 0.22, 0.24, 1, duration: 0.44)
+    }
+
+    private func edgeOpacity(x: CGFloat, width: CGFloat) -> Double {
+        min(1, max(0, min(x, width - x) / 90))
     }
 }
 

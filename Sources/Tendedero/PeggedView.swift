@@ -5,6 +5,8 @@ import SwiftUI
 struct PeggedView: View {
     let item: Pegged
     @ObservedObject var line: Line
+    var participates = true
+    var expandedGroup: RopeGroup? = nil
 
     @StateObject private var motion = HangingSwing()
     @State private var hovering = false
@@ -35,8 +37,8 @@ struct PeggedView: View {
 
     /// The photo fits inside the card area keeping its proportions, so the
     /// white border hugs it whether the screenshot is wide or tall.
-    static func photoSize(for size: CGSize) -> CGSize {
-        let maxW = Layout.cardWidth - 14, maxH = Layout.photoMaxHeight
+    static func photoSize(for size: CGSize, maxWidth: CGFloat = Layout.cardWidth - 14) -> CGSize {
+        let maxW = maxWidth, maxH = Layout.photoMaxHeight
         guard size.width > 0, size.height > 0 else { return CGSize(width: maxW, height: maxH) }
         let scale = min(maxW / size.width, maxH / size.height)
         return CGSize(width: size.width * scale, height: size.height * scale)
@@ -116,7 +118,24 @@ struct PeggedView: View {
                     .scaleEffect(hovering ? 1 : 0.6)
                     .allowsHitTesting(false)
             }
-            .overlay(GrabArea(item: item, line: line))
+            .overlay {
+                if participates { GrabArea(item: item, line: line) }
+            }
+            .overlay(alignment: .bottom) {
+                if let group = expandedGroup {
+                    RopeGroupBadge(group: group)
+                        .accessibilityHidden(true)
+                        .overlay {
+                            RopeGroupButton(group: group) { line.toggleRopeGroup(group.kind) }
+                        }
+                        .background {
+                            GeometryReader { proxy in
+                                Color.clear.preference(key: HitRectsKey.self, value: [group.id: proxy.frame(in: .global)])
+                            }
+                        }
+                        .padding(.bottom, 8)
+                }
+            }
             .overlay(alignment: .bottom) {
                 if copied {
                     Label(L("Copied"), systemImage: "checkmark")
@@ -135,7 +154,7 @@ struct PeggedView: View {
             .background(
                 GeometryReader { g in
                     Color.clear.preference(key: HitRectsKey.self,
-                                           value: item.falling ? [:] : [item.id: g.frame(in: .global)])
+                                           value: participates && !item.falling ? [item.id: g.frame(in: .global)] : [:])
                 }
             )
     }
