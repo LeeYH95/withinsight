@@ -5,6 +5,38 @@ import NotesCore
 @testable import Tendedero
 
 final class EditorImageStabilityTests: XCTestCase {
+    @MainActor func testInlineBodyDisplaysDecodedImagesWithoutAnotherParentUpdate() async throws {
+        _ = NSApplication.shared
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("inline-decode-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try NotesStore(directory: root)
+        let note = try store.create()
+        let bitmap = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 128, pixelsHigh: 72,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+        let source = root.appendingPathComponent("fixture.png")
+        try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: source)
+        _ = try store.importAttachment(from: source, to: note.id)
+        let saved = try XCTUnwrap(store.document(id: note.id))
+        let attachment = try XCTUnwrap(saved.attachments.first)
+        let session = NotesEditorSession(note: saved, store: store)
+        let body = NotesContinuousBody(session: session, scale: 1, onHeight: { _ in }, onAttachment: { _ in })
+        let host = NSHostingView(rootView: body)
+        host.frame = NSRect(x: 0, y: 0, width: 650, height: 400)
+        host.layoutSubtreeIfNeeded()
+        let view = try XCTUnwrap(session.textView as? NotesContinuousTextView)
+        let url = try session.localURL(for: attachment)
+        let preview = await NotesImageCache.shared.loadedImage(at: url)
+        XCTAssertNotNil(preview, "The same attachment already decoded successfully")
+        try await Task.sleep(for: .milliseconds(100))
+        let storage = view.attributedString()
+        let index = (storage.string as NSString).range(of: "\u{fffc}").location
+        XCTAssertNotEqual(index, NSNotFound)
+        guard index != NSNotFound else { return }
+        let token = storage.attribute(.attachment, at: index, effectiveRange: nil) as? NSTextAttachment
+        let cell = try XCTUnwrap(token?.attachmentCell as? NotesDocumentAttachmentCell)
+        XCTAssertNotNil(cell.previewImage, "Decoded pixels should replace the inline placeholder without reopening the editor")
+    }
+
     @MainActor func testImageReadinessWaitsForIMECommitAndThenReplacesThePlaceholder() throws {
         _ = NSApplication.shared
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("ime-image-" + UUID().uuidString)

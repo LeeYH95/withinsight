@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 import NotesCore
 
@@ -30,10 +31,7 @@ struct NotesContinuousBody: NSViewRepresentable {
         view.onAttachment = onAttachment
         view.onDropTargetChange = onDropTargetChange
         view.preservePastedFormatting = UserDefaults.standard.string(forKey:"notesPasteMode") == "preserve"
-        let cacheChanged = context.coordinator.imageRevision != NotesImageCache.shared.revision
-        let imagesChanged = !view.hasMarkedText() && cacheChanged && view.refreshVisibleImages(session.note)
-        if !view.hasMarkedText() { context.coordinator.imageRevision = NotesImageCache.shared.revision }
-        if !view.hasMarkedText(), context.coordinator.lastBlocks != session.note.blocks || view.readingScale != scale || imagesChanged || session.bodySelectionToRestore != nil {
+        if !view.hasMarkedText(), context.coordinator.lastBlocks != session.note.blocks || view.readingScale != scale || session.bodySelectionToRestore != nil {
             view.readingScale = scale; context.coordinator.load()
         }
         context.coordinator.measure()
@@ -51,10 +49,18 @@ struct NotesContinuousBody: NSViewRepresentable {
         weak var view:NotesContinuousTextView?
         var lastBlocks:[NoteBlock] = []
         var imageRevision = 0
+        private var imageUpdates: AnyCancellable?
         private var measured:CGFloat = 0
         private var pendingHeight: CGFloat?
         private var heightScheduled = false
-        init(_ parent:NotesContinuousBody) { self.parent = parent }
+        init(_ parent: NotesContinuousBody) {
+            self.parent = parent
+            super.init()
+            // The editor's parent may render without updating this native view.
+            imageUpdates = NotesImageCache.shared.$revision.dropFirst()
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self] _ in self?.applyDecodedImages() }
+        }
         func load() {
             guard let view, !view.hasMarkedText() else { return }
             lastBlocks = parent.session.note.blocks; imageRevision = NotesImageCache.shared.revision
@@ -104,15 +110,21 @@ struct NotesContinuousBody: NSViewRepresentable {
             if (view.textStorage?.length ?? 0) > 0, let id = (view.textStorage?.attribute(.notesBlock,at:index,effectiveRange:nil) as? String).flatMap(UUID.init(uuidString:)) { view.blockID = id; parent.session.focusedBlock = id }
         }
         func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool { true }
+        @discardableResult private func applyDecodedImages() -> Bool {
+            guard let view, !view.loading, !view.hasMarkedText(),
+                  imageRevision != NotesImageCache.shared.revision else { return false }
+            imageRevision = NotesImageCache.shared.revision
+            guard view.refreshVisibleImages(parent.session.note) else { return false }
+            load()
+            return true
+        }
+
         func measure() {
             guard let view, let container = view.textContainer, let manager = view.layoutManager else { return }
             guard !view.loading else { return }
             // IME composition may have deferred a completed decode. The first
             // safe layout after composition must consume it even without a new edit.
-            if !view.hasMarkedText(), imageRevision != NotesImageCache.shared.revision {
-                imageRevision = NotesImageCache.shared.revision
-                if view.refreshVisibleImages(parent.session.note) { load(); return }
-            }
+            if applyDecodedImages() { return }
             manager.ensureLayout(for:container)
             let height = max(100,manager.usedRect(for:container).height + 16)
             if abs(height - measured) > 0.5 {
