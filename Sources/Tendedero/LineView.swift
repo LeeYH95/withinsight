@@ -38,11 +38,8 @@ enum Layout {
         return ropeTop + 4 * sag(width: width) * f * (1 - f)
     }
 
-    /// Photos hang `spacing` apart, centred. When there are more than the
-    /// `visible` that fit: with Keep on line set, they keep their spacing,
-    /// the newest stays where the last one would hang on a full line, and
-    /// `scroll` brings older ones in from the left. Otherwise (a line hung
-    /// on a wider screen) they move closer together so none is past the edge.
+    /// Center the visible cards. When the rope overflows, keep the spacing
+    /// and let scrolling bring older cards in from the left.
     static func x(index: Int, count: Int, width: CGFloat, visible: Int, scroll: CGFloat) -> CGFloat {
         if count > visible {
             let newest = width / 2 + CGFloat(visible - 1) * spacing / 2

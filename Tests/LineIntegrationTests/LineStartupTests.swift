@@ -89,14 +89,14 @@ final class LineStartupTests: XCTestCase {
         XCTAssertEqual(defaults.stringArray(forKey: "pegged"), [imageURL.path])
     }
 
-    @MainActor func testSlowRestoredScreenshotsKeepMainActorResponsiveAndPreserveCapacity() async throws {
+    @MainActor func testSlowRestoreKeepsMainActorResponsiveAndRestoresOffscreenImages() async throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
         let urls = ["first.png", "second.png"].map { folder.appendingPathComponent($0) }
         for url in urls { try Data([0]).write(to: url) }
         let line = Line(restoring: false, gusts: false)
-        line.maxItems = 1
+        line.visibleCount = 1
         let reads = StartupReads()
         var responsive = false
         Task { @MainActor in

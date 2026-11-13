@@ -4,6 +4,39 @@ import XCTest
 @testable import Tendedero
 
 final class RopeGroupingTests: XCTestCase {
+    @MainActor func testImagesOutgrowViewportAndKeepTheirOrderAfterRestart() async throws {
+        let fixture = try Fixture()
+        defer { fixture.clean() }
+        let line = fixture.line
+        fixture.defaults.set(25, forKey: "keepOnLine")
+        line.visibleCount = 7
+        line.revealed = true
+
+        for _ in 0..<8 { try fixture.hangImage() }
+        let firstEight = line.items.map(\.url)
+        XCTAssertEqual(line.ropePresentation.groups.first?.members.count, 8)
+        line.toggleRopeGroup(.images)
+        for _ in 8..<27 { try fixture.hangImage() }
+        let expected = (0..<27).map { fixture.directory.appendingPathComponent("sample-\($0).png") }
+        XCTAssertEqual(firstEight, Array(expected.prefix(8)))
+        XCTAssertEqual(line.ropePresentation.groups.first?.members.map(\.url), expected)
+        XCTAssertEqual(line.expandedRopeGroup, .images)
+
+        line.visibleCount = 3
+        line.scroll(by: 10_000)
+        XCTAssertEqual(line.scroll, 24 * Layout.spacing)
+        let first = try XCTUnwrap(line.ropePresentation.groups.first?.cover.id)
+        XCTAssertGreaterThan(line.hangingX(for: first, width: 1024), 0)
+        XCTAssertEqual(fixture.defaults.stringArray(forKey: "pegged"), expected.map(\.path))
+
+        let reopened = Line(restoring: false, gusts: false, defaults: fixture.defaults)
+        reopened.visibleCount = 3
+        await reopened.restorePhotos()
+        reopened.restoreOrdering()
+        XCTAssertEqual(reopened.items.map(\.url), expected)
+        XCTAssertEqual(reopened.ropePresentation.groups.first?.members.count, 27)
+    }
+
     @MainActor func testIndependentRulesFoldOnlyAboveThresholdAndPreserveMixedOrder() throws {
         let fixture = try Fixture()
         defer { fixture.clean() }
@@ -81,7 +114,7 @@ final class RopeGroupingTests: XCTestCase {
         let batch = try XCTUnwrap(line.beginScreenshotClear())
         XCTAssertEqual(batch.targetSlots, [RopeGroupKind.images.id])
         line.releaseScreenshotSlot(RopeGroupKind.images.id, in: batch.id)
-        XCTAssertEqual(line.screenshotCount, 0)
+        XCTAssertEqual(line.clearableScreenshotCount, 0)
         XCTAssertEqual(line.liveCount, 5)
         line.finishScreenshotClear(batch.id)
         XCTAssertEqual(line.undoScreenshotClear(), 5)

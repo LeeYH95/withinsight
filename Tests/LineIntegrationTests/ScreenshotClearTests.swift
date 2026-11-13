@@ -93,6 +93,19 @@ final class ScreenshotClearTests: XCTestCase {
         XCTAssertEqual(f.line.screenshotClearUndoCount, 2)
     }
 
+    @MainActor func testTakingDownOwnedImagePreservesOriginalBytes() throws {
+        let f = try Fixture(); defer { f.clean() }
+        let image = try f.shot("owned", owned: true)
+        let original = try Data(contentsOf: image)
+        let id = try XCTUnwrap(f.line.hang(image, quietly: true))
+        XCTAssertTrue(f.line.isInInbox(id))
+
+        f.line.discard(id, quietly: true)
+
+        XCTAssertEqual(f.defaults.stringArray(forKey: "pegged"), [])
+        XCTAssertEqual(try Data(contentsOf: image), original)
+    }
+
     @MainActor func testClearCommitsEntireSnapshotToSavedMembershipBeforeAnimation() throws {
         let f = try Fixture(); defer { f.clean() }
         let a = try f.shot("a"), b = try f.shot("b")
@@ -212,11 +225,11 @@ final class ScreenshotClearTests: XCTestCase {
         XCTAssertTrue(f.line.items.isEmpty)
     }
 
-    @MainActor func testUndoNeverTrimsOrTrashesRestoredImagesAtTheCapacityLimit() throws {
+    @MainActor func testUndoRestoresImagesBeyondTheViewportAndPreservesFiles() throws {
         let f = try Fixture(); defer { f.clean() }
         let urls = try ["a", "b", "new"].map { try f.shot($0, owned: true) }
         f.line.hang(urls[0], quietly: true); f.line.hang(urls[1], quietly: true)
-        f.line.maxItems = 1
+        f.line.visibleCount = 1
         let batch = try XCTUnwrap(f.line.beginScreenshotClear())
         f.line.hang(urls[2], quietly: true)
         f.line.finishScreenshotClear(batch.id)
@@ -238,7 +251,6 @@ final class ScreenshotClearTests: XCTestCase {
         let owned = root.appendingPathComponent("owned")
         try FileManager.default.createDirectory(at: owned, withIntermediateDirectories: true)
         line = Line(restoring: false, gusts: false, defaults: defaults, inboxFolder: owned)
-        line.maxItems = 50
     }
     func thumbnail() -> NSImage { NSImage(size: NSSize(width: 40, height: 30)) }
     func shot(_ name: String, owned: Bool = false) throws -> URL {

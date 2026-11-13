@@ -3,7 +3,7 @@ import SwiftUI
 import NotesCore
 
 /// System settings are owned by the running app: changing their defaults alone
-/// would leave watchers, capacity and the registered global shortcut out of sync.
+/// would leave watchers, folding and the registered global shortcut out of sync.
 struct NotesSettingsSnapshot: Equatable {
     static let airDropStatusDidChange = Notification.Name("ShipianAirDropStatusDidChange")
     var watchesScreenshots = false
@@ -14,7 +14,6 @@ struct NotesSettingsSnapshot: Equatable {
     var loginNeedsApproval = false
     var screenshotFolder = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Desktop")
     var extraFolders: [URL] = []
-    var capacity: Int?
     var foldingRules: [RopeGroupKind: RopeFoldRule] = [:]
     var shortcut = "未设置"
 }
@@ -28,7 +27,6 @@ struct NotesSettingsSnapshot: Equatable {
     var toggleLogin: () -> Void = {}
     var chooseFolder: () -> Void = {}
     var removeFolder: (URL) -> Void = { _ in }
-    var setCapacity: (Int?) -> Void = { _ in }
     var setFolding: (RopeGroupKind, RopeFoldRule) -> Void = { _, _ in }
     var changeShortcut: () -> Void = {}
 }
@@ -190,9 +188,6 @@ struct NotesSettingsView: View {
             toggle("隔空投送图片自动挂上", detail: system.airDropStatus ?? "挂上保存到「下载」的隔空投送图片。",
                    value: Binding(get: { system.hangsAirDropImages }, set: { actions.watchAirDrop($0); refresh() }))
                 .disabled(!actions.systemAvailable)
-            row("挂绳保留数量", detail: "超出屏幕宽度时，可横向滚动查看。") {
-                menuValue(system.capacity.map { "\($0) 项" } ?? "适应屏幕", name: "挂绳保留数量", menu: capacityMenu)
-            }
             if !actions.systemAvailable { systemNote }
         case .shortcuts:
             row("唤出或收起挂绳", detail: system.shortcut) {
@@ -271,9 +266,6 @@ struct NotesSettingsView: View {
     }
     private func activationMenu() -> NSMenu {
         choiceMenu([("指针靠近顶部", false), ("仅手动唤出", true)], selected: hoverDisabled) { hoverDisabled = $0 }
-    }
-    private func capacityMenu() -> NSMenu {
-        choiceMenu([("适应屏幕", nil), ("25 项", 25), ("50 项", 50), ("100 项", 100)], selected: system.capacity) { actions.setCapacity($0); refresh() }
     }
     private func choiceMenu<Value: Equatable>(_ options: [(String, Value)], selected: Value, select: @escaping (Value) -> Void) -> NSMenu {
         let menu = NSMenu()
