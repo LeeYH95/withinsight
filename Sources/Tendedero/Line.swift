@@ -48,7 +48,7 @@ struct ScreenshotClearBatch {
 }
 
 /// The line itself: what hangs on it and what you can do with each item.
-/// The files never move. The line is only a view onto them.
+/// The line keeps references to files and notes.
 @MainActor
 final class Line: ObservableObject {
     @Published private(set) var items: [Pegged] = [] {
@@ -103,24 +103,11 @@ final class Line: ObservableObject {
     /// uses them to only catch clicks over photos and let the rest through.
     var hitRects: [UUID: CGRect] = [:]
 
-    var maxItems = 8
-    /// How many photos fit across the screen. With Keep on line set, the
-    /// line can hold more, and the rest are reached by scrolling.
+    /// How many cards fit across the screen. Scroll to reach the rest.
     var visibleCount = 8
     /// How far the line is scrolled towards older photos, in points; 0 shows
     /// the newest.
     @Published var scroll: CGFloat = 0
-
-    /// Keep on line, from the menu bar: how many photos the line keeps, or
-    /// nil for as many as fit across the screen.
-    nonisolated static let keepChoices = [25, 50, 100]
-    nonisolated static var keepOnLine: Int? {
-        get {
-            let n = UserDefaults.standard.integer(forKey: "keepOnLine")
-            return keepChoices.contains(n) ? n : nil
-        }
-        set { UserDefaults.standard.set(newValue ?? 0, forKey: "keepOnLine") }
-    }
 
 
     var soundOn: Bool {
@@ -186,7 +173,6 @@ final class Line: ObservableObject {
     var noteDragURL: ((UUID) -> URL?)?
 
     func removeNote(_ id: UUID) { drop(id, quietly: true) }
-    var screenshotCount: Int { items.filter { $0.noteID == nil && !$0.falling }.count }
     var clearableScreenshotCount: Int {
         items.filter { $0.noteID == nil && !$0.isRecording && !$0.falling }.count + pendingScreenshotPaths.count
     }
@@ -302,12 +288,6 @@ final class Line: ObservableObject {
         item.flying = flying
         items.append(item)
         scroll = 0
-        // A full line lets the oldest photo fall off the far end. Only one: a
-        // line hung on a wider screen keeps its length here instead of losing
-        // several photos to a single capture.
-        if screenshotClear == nil, screenshotCount > maxItems, let oldest = items.first(where: { $0.noteID == nil && !$0.falling }) {
-            letGo(oldest.id)
-        }
         save()
         if !quietly { play("Tink", volume: 0.35) }
         return item.id
@@ -443,9 +423,7 @@ final class Line: ObservableObject {
         return toTheLeft ? Array(live[..<i]) : Array(live[(i + 1)...])
     }
 
-    /// Takes down everything on one side of a photo. Each one goes the way
-    /// of its own corner button: to the Trash from Tendedero's folder, and
-    /// only off the line from anywhere else.
+    /// Takes down everything on one side of a photo.
     func takeDown(_ id: UUID, toTheLeft: Bool) {
         takeDown(neighbours(of: id, toTheLeft: toTheLeft))
     }
@@ -516,48 +494,26 @@ final class Line: ObservableObject {
         contentsOfFile: "/System/Library/Components/CoreAudio.component/Contents/SharedSupport/SystemSounds/dock/drag to trash.aif",
         byReference: true)
 
-    /// Whether the file lives in Tendedero's own folder. Those are discarded
-    /// to the Trash, or the folder would fill up with forgotten screenshots.
-    /// Files anywhere else, like the Desktop, stay where they are.
+    /// Whether the file lives in the app's screenshot inbox.
     func isInInbox(_ id: UUID) -> Bool {
         guard let item = items.first(where: { $0.id == id }), item.noteID == nil else { return false }
         return item.url.standardizedFileURL.path.hasPrefix((inboxFolder ?? Inbox.folder).standardizedFileURL.path + "/")
     }
 
-    /// The corner cross and "Take down" both end up here.
+    /// The corner button and "Take down" only change rope membership.
     func discard(_ id: UUID, quietly: Bool = false) {
         if let noteID = items.first(where: { $0.id == id })?.noteID {
             guard onTakeOffNote?(noteID) ?? true else { return }
-            drop(id, quietly: quietly)
-            return
         }
-        if isInInbox(id) { trash(id, quietly: quietly) } else { drop(id, quietly: quietly) }
+        drop(id, quietly: quietly)
     }
 
-    /// The oldest photo falling off a full line. Like the cross, a file from
-    /// Tendedero's folder goes to the Trash, or nothing would ever take it out
-    /// of that folder. If the Trash refuses it, it still leaves the line.
     /// Moves along a line that holds more than fit, from a scroll gesture.
     func scroll(by delta: CGFloat) {
         guard screenshotClear == nil else { return }
         let most = ropePresentation.scrollLimit(visible: visibleCount)
         let next = min(most, max(0, scroll + delta))
         if next != scroll { scroll = next }
-    }
-
-    /// After Keep on line is lowered, the oldest photos past it go the way
-    /// of a full line.
-    func trim() {
-        guard screenshotClear == nil else { return }
-        while screenshotCount > maxItems, let oldest = items.first(where: { $0.noteID == nil && !$0.falling }) {
-            letGo(oldest.id)
-        }
-        scroll = 0
-    }
-
-    private func letGo(_ id: UUID) {
-        if isInInbox(id), trash(id, quietly: true) { return }
-        drop(id, quietly: true)
     }
 
     /// Inbox mode: keep a screenshot by moving it to the Desktop.
@@ -669,9 +625,7 @@ final class Line: ObservableObject {
         defaults.set(order.compactMap { $0.hasPrefix("image:") ? String($0.dropFirst(6)) : nil }, forKey: storeKey)
     }
 
-    /// Everything comes back as it was. This runs before the line knows its
-    /// screen, so the capacity is still the default one: hanging through
-    /// `hang` would let photos fall off a wide screen's line at every launch.
+    /// Restore saved references in order without playing arrival sounds.
     private func restore() {
         let paths = defaults.stringArray(forKey: storeKey) ?? []
         for path in paths where FileManager.default.fileExists(atPath: path) {

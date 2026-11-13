@@ -16,9 +16,9 @@ final class LineNoteTests: XCTestCase {
         XCTAssertTrue(line.items.first?.thumb === next)
     }
 
-    @MainActor func testScreenshotCapacityNeverEvictsNotes() throws {
+    @MainActor func testHangingImagesKeepsNotesAndImagesBeyondTheViewport() throws {
         let line = Line(restoring: false, gusts: false)
-        line.maxItems = 1
+        line.visibleCount = 1
         let ids = [UUID(), UUID(), UUID()]
         ids.forEach { line.hangNote($0, thumbnail: image(), quietly: true) }
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -31,7 +31,7 @@ final class LineNoteTests: XCTestCase {
             line.hang(url, quietly: true)
         }
         XCTAssertEqual(Set(line.items.filter { !$0.falling }.compactMap(\.noteID)), Set(ids))
-        XCTAssertEqual(line.items.filter { $0.noteID == nil && !$0.falling }.count, 1)
+        XCTAssertEqual(line.items.filter { $0.noteID == nil && !$0.falling }.count, 2)
     }
 
     @MainActor func testPruneDoesNotTreatNoteReferenceAsMissingScreenshot() {

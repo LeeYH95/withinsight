@@ -105,10 +105,8 @@ struct PeggedView: View {
             .animation(HangingMotion.reduced ? nil : (pressed ? .easeInOut(duration: 0.45) : .spring(response: 0.3, dampingFraction: 0.6)), value: pressed)
             .opacity(dragging ? 0.45 : 1)
             .overlay(alignment: .topLeading) {
-                // Drawn here, clicked through GrabView, which sits on top. A
-                // cross sends a file in Tendedero's folder to the Trash; for a
-                // file anywhere else it only hides it from the line.
-                Image(systemName: item.noteID != nil ? "minus" : (line.isInInbox(item.id) ? "xmark" : "eye.slash"))
+                // Drawn here, clicked through GrabView, which sits on top.
+                Image(systemName: item.noteID != nil ? "minus" : "eye.slash")
                     .font(.system(size: 8, weight: .bold))
                     .foregroundStyle(.primary)
                     .frame(width: 20, height: 20)

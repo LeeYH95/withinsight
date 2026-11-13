@@ -9,7 +9,7 @@ import SwiftUI
 /// - The Trash discards it.
 /// - Nowhere that accepts it: the photo flies back to the line.
 ///
-/// Click copies, press and hold opens Markup, the corner cross discards.
+/// Click copies, press and hold opens Markup, the corner button takes it down.
 struct GrabArea: NSViewRepresentable {
     let item: Pegged
     let line: Line
@@ -69,7 +69,7 @@ struct GrabArea: NSViewRepresentable {
         view.outsideOperations = [.copy, .move, .delete]
         view.toolTip = nil
         view.hoverHelp = "点按复制 · 双击打开 · 按住标注 · 拖动排序"
-        view.crossHelp = "从挂绳取下"
+        view.crossHelp = "从挂绳取下，保留文件"
         view.setAccessibilityHelp(view.hoverHelp)
         view.setAccessibilityLabel("截图：\(item.url.lastPathComponent)，点按复制；双击打开")
         view.url = item.url
@@ -98,17 +98,12 @@ struct GrabArea: NSViewRepresentable {
                 menu.addItem(ClosureMenuItem(L("Markup")) { line.markup(id) })
             }
             menu.addItem(ClosureMenuItem(L("Show in Finder")) { line.reveal(id) })
-            let inInbox = line.isInInbox(id)
-            if inInbox {
+            if line.isInInbox(id) {
                 menu.addItem(ClosureMenuItem(L("Save to Desktop")) { line.saveToDesktop(id) })
             }
             menu.addItem(.separator())
-            if inInbox {
-                menu.addItem(ClosureMenuItem(L("Discard")) { line.discard(id) }.notesDanger())
-            } else {
-                menu.addItem(ClosureMenuItem(L("Take down")) { line.discard(id) })
-                menu.addItem(ClosureMenuItem(L("Move to Trash")) { line.trash(id) }.notesDanger())
-            }
+            menu.addItem(ClosureMenuItem(L("Take down")) { line.discard(id) })
+            menu.addItem(ClosureMenuItem(L("Move to Trash")) { line.trash(id) }.notesDanger())
             let left = ClosureMenuItem(L("Take down everything to the left")) { line.takeDown(id, toTheLeft: true) }
             left.isEnabled = !line.neighbours(of: id, toTheLeft: true).isEmpty
             menu.addItem(left)
@@ -191,7 +186,7 @@ final class GrabView: NSView, NSDraggingSource {
     override func accessibilityPerformPress() -> Bool { NotesTooltipPresenter.shared.dismiss(); onClick(); return true }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
-    /// The discard cross drawn in the top left corner of the card. It is
+    /// The take-down button drawn in the top left corner of the card. It is
     /// handled here because this view sits on top of the SwiftUI card.
     static let crossHitSize: CGFloat = 26
 

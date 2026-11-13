@@ -413,8 +413,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             NSScreen.screens.first { NSMouseInRect(CGPoint(x: from.midX, y: from.midY), $0.frame, false) }
         }
         // Every capture brings the line down before it hangs, on the screen it
-        // was taken on. On a full line the oldest photo then falls in view as
-        // the new one flies in.
+        // was taken on.
         comeDown(on: screen)
         guard let id = line.hang(url, flying: from != nil) else {
             // Nothing hung after all, so an empty line goes away again.
@@ -742,13 +741,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    private func setKeep(_ n: Int?) {
-        guard n != Line.keepOnLine else { return }
-        Line.keepOnLine = n
-        updateCapacity()
-        line.trim()
-    }
-
     private func setSize(_ size: Layout.Size) {
         guard size != Layout.size else { return }
         line.screenshotSweep.complete()
@@ -761,9 +753,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func updateCapacity() {
         if let width = line.screenshotSweep.width, width != panel.frame.width { line.screenshotSweep.complete() }
         let usable = panel.frame.width - (96 + Layout.controlsWidth)
-        let fits = max(3, min(12, Int(usable / Layout.spacing)))
-        line.visibleCount = fits
-        line.maxItems = max(fits, Line.keepOnLine ?? fits)
+        line.visibleCount = max(3, min(12, Int(usable / Layout.spacing)))
     }
 
     // MARK: Menu bar
@@ -898,19 +888,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         folderItem.isEnabled = !LaunchOptions.demo
         menu.addItem(folderItem)
 
-        let keepItem = NSMenuItem(title: L("Keep on line"), action: nil, keyEquivalent: "")
-        let keeps = NSMenu()
-        let fit = ClosureMenuItem(L("As many as fit")) { [weak self] in self?.setKeep(nil) }
-        fit.state = Line.keepOnLine == nil ? .on : .off
-        keeps.addItem(fit)
-        for n in Line.keepChoices {
-            let item = ClosureMenuItem(String(format: L("%d photos"), n)) { [weak self] in self?.setKeep(n) }
-            item.state = Line.keepOnLine == n ? .on : .off
-            keeps.addItem(item)
-        }
-        keepItem.submenu = keeps
-        menu.addItem(keepItem)
-
         let sizeItem = NSMenuItem(title: L("Size"), action: nil, keyEquivalent: "")
         let sizes = NSMenu()
         for (size, title) in [(Layout.Size.small, L("Small")), (.medium, L("Medium")), (.large, L("Large"))] {
@@ -969,7 +946,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let symbols = ["新建闪念": "square.and.pencil", "全部闪念": "square.grid.2x2", "闪念设置…": "slider.horizontal.3",
                        L("Show line"): "arrow.down.to.line", L("Hide line"): "arrow.up.to.line",
                        L("Take everything down"): "tray.and.arrow.down", "启用截图监听": "camera.viewfinder",
-                       L("Also watch folders"): "folder", L("Keep on line"): "pin", L("Size"): "rectangle.expand.vertical",
+                       L("Also watch folders"): "folder", L("Size"): "rectangle.expand.vertical",
                        L("Shortcut"): "keyboard", L("Open screenshots folder"): "folder", "退出 " + LaunchOptions.appName: "power"]
         for item in menu.items { if let symbol = symbols[item.title] { item.notesSymbol(symbol) } }
     }
@@ -1025,7 +1002,6 @@ private extension AppDelegate {
                         loginNeedsApproval: !LaunchOptions.demo && SMAppService.mainApp.status == .requiresApproval,
                         screenshotFolder: self?.watcher?.folder ?? ScreenshotWatcher.screenshotFolder(),
                         extraFolders: Self.extraFolders,
-                        capacity: Line.keepOnLine,
                         foldingRules: self?.line.foldingRules ?? [:],
                         shortcut: (Shortcut.current?.display ?? "未设置") + (LaunchOptions.demo ? " · 验收模式未注册" : ""))
                 },
@@ -1039,7 +1015,6 @@ private extension AppDelegate {
                     Self.extraFolders.removeAll { $0.standardizedFileURL == folder.standardizedFileURL }
                     self?.startWatcher()
                 },
-                setCapacity: { [weak self] value in self?.setKeep(value) },
                 setFolding: { [weak self] kind, rule in self?.line.setFolding(rule, for: kind) },
                 changeShortcut: { [weak self] in guard !LaunchOptions.demo else { return }; self?.changeShortcut() })
             workspace.onFocus = { [weak self] id in self?.line.selectedNoteID = id }
